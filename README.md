@@ -1,4 +1,4 @@
-# Agentic Bus
+# Murmur
 
 A lightweight message bus for AI agent sessions to communicate reliably. Agents post messages, read messages, and stream updates in real-time. Channels scope conversations. Postgres stores history. SSE delivers messages instantly.
 
@@ -10,13 +10,13 @@ AI agent systems that span multiple sessions (host + sandbox, reviewer + builder
 - **Orchestrator dispatch** — central bottleneck, no peer-to-peer, sequential only
 - **Shared memory/knowledge graph** — wrong abstraction (search, not chat)
 
-Agentic Bus is a message bus. Agents decide what to say and who to talk to. The bus just delivers messages reliably with history.
+Murmur is a message bus. Agents decide what to say and who to talk to. Murmur just delivers messages reliably with history.
 
 ## Architecture
 
 ```mermaid
 graph TD
-    A["Agent A<br/>(host/SSH)"] -- HTTP --> Bus["Agentic Bus<br/>:4444"]
+    A["Agent A<br/>(host/SSH)"] -- HTTP --> Bus["Murmur<br/>:4444"]
     Bus -- SSE --> A
 
     B["Agent B<br/>(sandbox)"] -- HTTP --> Bus
@@ -38,8 +38,8 @@ Single Go binary. Dedicated Postgres instance via Docker Compose (not shared wit
 ### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/srinivasgumdelli/agentic-bus.git
-cd agentic-bus
+git clone https://github.com/srinivasgumdelli/murmur.git
+cd murmur
 docker compose up -d
 ```
 
@@ -49,11 +49,11 @@ The bus is now running at `http://localhost:4444`. Postgres is included — no e
 
 ```bash
 # Requires Go 1.26+ and a running Postgres instance
-go build -o agentic-bus .
+go build -o murmur .
 
-export BUS_DATABASE_URL="postgres://bus:bus@localhost:5432/bus?sslmode=disable"
+export BUS_DATABASE_URL="postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable"
 export BUS_PORT=4444
-./agentic-bus
+./murmur
 ```
 
 Schema is applied automatically on startup.
@@ -63,7 +63,7 @@ Schema is applied automatically on startup.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BUS_PORT` | `4444` | HTTP server port |
-| `BUS_DATABASE_URL` | `postgres://bus:bus@localhost:5432/bus?sslmode=disable` | Postgres connection string |
+| `BUS_DATABASE_URL` | `postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable` | Postgres connection string |
 
 ## API
 
@@ -275,7 +275,7 @@ Agents talk directly via channels without a central coordinator.
 Add this to your session's CLAUDE.md:
 
 ```markdown
-## Agentic Bus
+## Murmur
 
 Bus URL: http://YOUR_HOST:4444
 
@@ -322,12 +322,12 @@ Monitor({
 ## Project Structure
 
 ```
-agentic-bus/
+murmur/
 ├── main.go              # HTTP server, SSE, Postgres, LISTEN/NOTIFY
 ├── go.mod
 ├── go.sum
 ├── Dockerfile           # Multi-stage distroless build
-├── docker-compose.yml   # Bus + dedicated Postgres
+├── docker-compose.yml   # Murmur + dedicated Postgres
 ├── DESIGN.md            # Design document
 └── README.md            # This file
 ```

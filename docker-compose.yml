@@ -1,13 +1,13 @@
 version: "3.8"
 
 services:
-  bus:
+  murmur:
     build: .
     ports:
       - "4444:4444"
     environment:
       - BUS_PORT=4444
-      - BUS_DATABASE_URL=postgres://bus:bus@db:5432/bus?sslmode=disable
+      - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
     depends_on:
       db:
         condition: service_healthy
@@ -16,17 +16,17 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: bus
-      POSTGRES_PASSWORD: bus
-      POSTGRES_DB: bus
+      POSTGRES_USER: murmur
+      POSTGRES_PASSWORD: murmur
+      POSTGRES_DB: murmur
     volumes:
-      - bus-data:/var/lib/postgresql/data
+      - murmur-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bus"]
+      test: ["CMD-SHELL", "pg_isready -U murmur"]
       interval: 5s
       timeout: 3s
       retries: 5
     restart: unless-stopped
 
 volumes:
-  bus-data:
+  murmur-data:

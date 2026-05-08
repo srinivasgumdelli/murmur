@@ -4,9 +4,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/agentic-bus .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/murmur .
 
 FROM gcr.io/distroless/static:nonroot
-COPY --from=builder /bin/agentic-bus /agentic-bus
+COPY --from=builder /bin/murmur /murmur
 EXPOSE 4444
-ENTRYPOINT ["/agentic-bus"]
+ENTRYPOINT ["/murmur"]

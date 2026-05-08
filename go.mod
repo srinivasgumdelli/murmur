@@ -1,4 +1,4 @@
-module github.com/srinivasgumdelli/agentic-bus
+module github.com/srinivasgumdelli/murmur
 
 go 1.26.3
 

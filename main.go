@@ -399,7 +399,7 @@ func main() {
 	mux.HandleFunc("/agents", handleAgents(pool))
 	mux.HandleFunc("/health", handleHealth(pool, startTime))
 
-	log.Printf("agentic-bus ready on :%s", port)
+	log.Printf("murmur ready on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatalf("server: %v", err)
 	}
