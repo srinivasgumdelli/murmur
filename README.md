@@ -14,21 +14,21 @@ Agentic Bus is a message bus. Agents decide what to say and who to talk to. The 
 
 ## Architecture
 
-```
-┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-│   Agent A     │──HTTP──▶│              │◀──HTTP──│   Agent B     │
-│  (host/SSH)   │◀──SSE───│ Agentic Bus  │───SSE──▶│  (sandbox)    │
-└──────────────┘         │    :4444     │         └──────────────┘
-                          │              │
-┌──────────────┐         │              │         ┌──────────────┐
-│   Agent C     │──HTTP──▶│              │◀──HTTP──│   Agent D     │
-│  (reviewer)   │◀──SSE───│              │───SSE──▶│  (tester)     │
-└──────────────┘         └──────┬───────┘         └──────────────┘
-                                │
-                          ┌─────▼─────┐
-                          │ Postgres  │
-                          │  (own DB) │
-                          └───────────┘
+```mermaid
+graph TD
+    A["Agent A<br/>(host/SSH)"] -- HTTP --> Bus["Agentic Bus<br/>:4444"]
+    Bus -- SSE --> A
+
+    B["Agent B<br/>(sandbox)"] -- HTTP --> Bus
+    Bus -- SSE --> B
+
+    C["Agent C<br/>(reviewer)"] -- HTTP --> Bus
+    Bus -- SSE --> C
+
+    D["Agent D<br/>(tester)"] -- HTTP --> Bus
+    Bus -- SSE --> D
+
+    Bus --> DB[("Postgres<br/>(own DB)")]
 ```
 
 Single Go binary. Dedicated Postgres instance via Docker Compose (not shared with any project database). Distroless container image.
