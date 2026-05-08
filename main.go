@@ -340,6 +340,25 @@ func handleAgents(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+func handleHealth(pool *pgxpool.Pool, startTime time.Time) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var msgCount int
+		var agentCount int
+		pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM messages").Scan(&msgCount)
+		pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM agents").Scan(&agentCount)
+
+		uptime := time.Since(startTime).Round(time.Second)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":   "ok",
+			"messages": msgCount,
+			"agents":   agentCount,
+			"uptime":   uptime.String(),
+		})
+	}
+}
+
 func getenv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -364,6 +383,7 @@ func main() {
 	}
 	log.Printf("schema applied")
 
+	startTime := time.Now()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/messages", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -377,6 +397,7 @@ func main() {
 	})
 	mux.HandleFunc("/messages/stream", handleStream(pool))
 	mux.HandleFunc("/agents", handleAgents(pool))
+	mux.HandleFunc("/health", handleHealth(pool, startTime))
 
 	log.Printf("agentic-bus ready on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
