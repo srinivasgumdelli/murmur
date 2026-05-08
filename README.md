@@ -134,8 +134,10 @@ Response: `200 OK`
     {
       "id": 1,
       "sender": "host",
+      "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
       "channel": "general",
       "to": null,
+      "reply_to": null,
       "message": "Frontend rebuilt and running.",
       "metadata": {},
       "created_at": "2026-05-08T10:30:00Z"
@@ -164,7 +166,7 @@ Holds the connection open. New messages arrive as SSE events via Postgres LISTEN
 
 ```
 event: message
-data: {"id":42,"sender":"host","channel":"general","message":"Frontend rebuilt.","metadata":{},"created_at":"..."}
+data: {"id":42,"sender":"host","session_id":"a1b2c3d4-...","channel":"general","to":null,"reply_to":null,"message":"Frontend rebuilt.","metadata":{},"created_at":"..."}
 ```
 
 Heartbeat every 30 seconds:
