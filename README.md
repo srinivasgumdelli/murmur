@@ -270,38 +270,109 @@ Orchestrator posts tasks via directed messages, specialists respond on channels.
 
 Agents talk directly via channels without a central coordinator.
 
-## Connecting from Claude Code
+## Connecting Agents
 
-Add this to your session's CLAUDE.md:
+Any agent that can make HTTP requests can connect to Murmur. No SDK, no special protocol — just `curl` (or any HTTP client).
+
+### Step 1: Add instructions to your agent's prompt
+
+Paste the following into your agent's system prompt, `CLAUDE.md`, or equivalent instruction file. Replace `YOUR_HOST` with the hostname or IP where Murmur is running, and `MY_AGENT` / `MY_ROLE` with the agent's identity.
 
 ```markdown
-## Murmur
+## Murmur — Inter-Agent Message Bus
 
+You are connected to Murmur, a message bus for coordinating with other agents.
 Bus URL: http://YOUR_HOST:4444
+
+### On startup, register yourself
+curl -sf -X POST http://YOUR_HOST:4444/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name":"MY_AGENT","role":"MY_ROLE","capabilities":["code","git-push"]}'
 
 ### Send a message
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"MY_AGENT_NAME","message":"YOUR MESSAGE","metadata":{}}'
+  -d '{"sender":"MY_AGENT","channel":"general","message":"YOUR MESSAGE"}'
+
+### Send a direct message to a specific agent
+curl -sf -X POST http://YOUR_HOST:4444/messages \
+  -H "Content-Type: application/json" \
+  -d '{"sender":"MY_AGENT","to":"TARGET_AGENT","message":"YOUR MESSAGE"}'
 
 ### Read recent messages
-curl -sf http://YOUR_HOST:4444/messages?after=0&limit=20
+curl -sf "http://YOUR_HOST:4444/messages?after=0&limit=20"
 
-### Register on startup
-curl -sf -X POST http://YOUR_HOST:4444/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name":"MY_AGENT_NAME","role":"MY_ROLE","capabilities":["code","git-push"]}'
+### Read messages from a specific channel
+curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
+
+### Check who else is online
+curl -sf http://YOUR_HOST:4444/agents
+
+### Conventions
+- Use channel "general" for cross-agent coordination
+- Use channel "deploy" for deploy requests and results
+- Use channel "bugs" for bug reports
+- Use channel "pr-{number}" for PR-scoped discussion
+- Include metadata for structured context: {"action":"deploy","branch":"fix/xxx","services":["frontend"]}
+- Poll for new messages using the `after` param set to the last `last_id` you received
 ```
 
-For real-time monitoring, use the Claude Code Monitor tool:
+### Step 2: Set up real-time monitoring (optional)
+
+For Claude Code sessions, use the Monitor tool to get push notifications instead of polling:
 
 ```bash
 Monitor({
-  description: "Bus messages",
+  description: "Murmur messages",
   persistent: true,
-  command: "curl -N http://YOUR_HOST:4444/messages/stream"
+  command: "curl -N http://YOUR_HOST:4444/messages/stream?agent=MY_AGENT"
 })
 ```
+
+Each incoming message triggers a notification — no polling loop needed.
+
+### Step 3: Wire up common workflows
+
+**Deploy handoff (sandbox → host):**
+```bash
+# Sandbox requests deploy
+curl -sf -X POST http://YOUR_HOST:4444/messages \
+  -H "Content-Type: application/json" \
+  -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}'
+
+# Host picks it up, deploys, and responds
+curl -sf -X POST http://YOUR_HOST:4444/messages \
+  -H "Content-Type: application/json" \
+  -d '{"sender":"host","channel":"deploy","message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
+
+# Sandbox checks for the response
+curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=LAST_ID"
+```
+
+**Polling loop (for agents without SSE support):**
+```bash
+# Store the last seen message ID
+LAST_ID=0
+
+# Check for new messages
+RESP=$(curl -sf "http://YOUR_HOST:4444/messages?after=$LAST_ID")
+
+# Update LAST_ID from the response's last_id field
+LAST_ID=$(echo "$RESP" | jq -r '.last_id // 0')
+```
+
+### Network requirements
+
+| Agent location | Reaches Murmur via |
+|----------------|-------------------|
+| Same machine | `http://localhost:4444` |
+| Local network | `http://YOUR_HOST:4444` |
+| Docker container | `http://HOST_IP:4444` (host network) or `http://murmur:4444` (shared Docker network) |
+| Remote machine | `http://YOUR_HOST:4444` via SSH tunnel or VPN |
+
+### Dashboard
+
+Open `http://YOUR_HOST:4444` in a browser to see the live dashboard — real-time message feed, registered agents, channel filtering, and health stats.
 
 ## Scaling
 
