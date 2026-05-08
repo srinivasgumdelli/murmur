@@ -196,7 +196,7 @@ function connectSSE() {
 
 async function loadHistory() {
   try {
-    const res = await fetch('/messages?limit=100&after=0');
+    const res = await fetch('/messages?channel=&limit=100&after=0');
     const data = await res.json();
     data.messages.forEach(renderMsg);
   } catch(e) {}
