@@ -73,7 +73,7 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	channel := r.URL.Query().Get("channel")
-	if channel == "" {
+	if !r.URL.Query().Has("channel") {
 		channel = "general"
 	}
 	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
@@ -82,14 +82,19 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	rows, err := pool.Query(r.Context(),
-		`SELECT id, sender, channel, "to", message, metadata, created_at
-		 FROM messages
-		 WHERE channel = $1 AND id > $2
-		 ORDER BY id ASC
-		 LIMIT $3`,
-		channel, after, limit,
-	)
+	var query string
+	var args []any
+	if channel == "" {
+		query = `SELECT id, sender, channel, "to", message, metadata, created_at
+		 FROM messages WHERE id > $1 ORDER BY id ASC LIMIT $2`
+		args = []any{after, limit}
+	} else {
+		query = `SELECT id, sender, channel, "to", message, metadata, created_at
+		 FROM messages WHERE channel = $1 AND id > $2 ORDER BY id ASC LIMIT $3`
+		args = []any{channel, after, limit}
+	}
+
+	rows, err := pool.Query(r.Context(), query, args...)
 	if err != nil {
 		log.Printf("query messages: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

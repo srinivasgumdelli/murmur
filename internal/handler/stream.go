@@ -26,7 +26,7 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		channel := r.URL.Query().Get("channel")
-		if channel == "" {
+		if !r.URL.Query().Has("channel") {
 			channel = "general"
 		}
 		agent := r.URL.Query().Get("agent")
@@ -76,7 +76,7 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 				continue
 			}
 
-			if payload.Channel != channel {
+			if channel != "" && payload.Channel != channel {
 				continue
 			}
 			if agent != "" && payload.To != nil && *payload.To != agent {

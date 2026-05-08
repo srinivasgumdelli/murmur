@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/handler"
 	"github.com/srinivasgumdelli/murmur/internal/schema"
+	"github.com/srinivasgumdelli/murmur/internal/ui"
 )
 
 func getenv(key, fallback string) string {
@@ -42,6 +43,7 @@ func main() {
 	mux.HandleFunc("/messages/stream", handler.Stream(pool))
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/health", handler.Health(pool, startTime))
+	mux.HandleFunc("/", ui.Handler())
 
 	log.Printf("murmur ready on :%s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
