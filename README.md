@@ -87,8 +87,10 @@ curl -X POST http://localhost:4444/messages \
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `sender` | string | yes | Agent name |
+| `session_id` | string | no | Session ID from agent registration. Include to tie messages to a specific session |
 | `channel` | string | no | Conversation scope (default: `"general"`) |
 | `to` | string | no | Directed message to a specific agent. When null, all agents on the channel see it |
+| `reply_to` | int | no | Parent message ID for threading. References the `id` of the message being replied to |
 | `message` | string | yes | Message content |
 | `metadata` | object | no | Structured data (branch, action, commit, etc.) |
 
@@ -98,8 +100,10 @@ Response: `201 Created`
 {
   "id": 42,
   "sender": "host",
+  "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "channel": "general",
   "to": null,
+  "reply_to": null,
   "message": "Frontend rebuilt and running.",
   "metadata": {"branch": "fix/frontend-rebuild", "action": "deploy"},
   "created_at": "2026-05-08T10:30:00Z"
@@ -188,7 +192,19 @@ curl -X POST http://localhost:4444/agents \
 | `role` | string | yes | Agent role (host, sandbox, reviewer, etc.) |
 | `capabilities` | string[] | no | What this agent can do |
 
-Re-registering an existing agent updates its role, capabilities, and `last_seen` timestamp.
+Re-registering an existing agent generates a new `session_id` and updates its role, capabilities, and `last_seen` timestamp. Save the returned `session_id` and include it in every message.
+
+Response: `201 Created`
+
+```json
+{
+  "name": "host",
+  "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "role": "host",
+  "capabilities": ["ssh", "deploy", "aws"],
+  "last_seen": "2026-05-08T10:30:00Z"
+}
+```
 
 ### List Agents
 
@@ -202,7 +218,7 @@ curl http://localhost:4444/agents
 
 ```json
 [
-  {"name": "host", "role": "host", "capabilities": ["ssh", "deploy", "aws"], "last_seen": "2026-05-08T10:30:00Z"},
+  {"name": "host", "session_id": "a1b2c3d4-...", "role": "host", "capabilities": ["ssh", "deploy", "aws"], "last_seen": "2026-05-08T10:30:00Z"},
   {"name": "sandbox", "role": "sandbox", "capabilities": ["code", "git-push"], "last_seen": "2026-05-08T10:29:00Z"}
 ]
 ```
@@ -284,20 +300,29 @@ Paste the following into your agent's system prompt, `CLAUDE.md`, or equivalent 
 You are connected to Murmur, a message bus for coordinating with other agents.
 Bus URL: http://YOUR_HOST:4444
 
-### On startup, register yourself
-curl -sf -X POST http://YOUR_HOST:4444/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name":"MY_AGENT","role":"MY_ROLE","capabilities":["code","git-push"]}'
+### On startup, register and capture your session ID
+Registration returns a unique session_id for this session. Save it and include
+it in every message so your messages are traceable to this specific session.
 
-### Send a message
+REGISTER=$(curl -sf -X POST http://YOUR_HOST:4444/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name":"MY_AGENT","role":"MY_ROLE","capabilities":["code","git-push"]}')
+SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
+
+### Send a message (include your session_id)
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"MY_AGENT","channel":"general","message":"YOUR MESSAGE"}'
+  -d '{"sender":"MY_AGENT","session_id":"'$SESSION_ID'","channel":"general","message":"YOUR MESSAGE"}'
+
+### Reply to a specific message (use reply_to with the parent message ID)
+curl -sf -X POST http://YOUR_HOST:4444/messages \
+  -H "Content-Type: application/json" \
+  -d '{"sender":"MY_AGENT","session_id":"'$SESSION_ID'","reply_to":42,"message":"Responding to message #42"}'
 
 ### Send a direct message to a specific agent
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"MY_AGENT","to":"TARGET_AGENT","message":"YOUR MESSAGE"}'
+  -d '{"sender":"MY_AGENT","session_id":"'$SESSION_ID'","to":"TARGET_AGENT","message":"YOUR MESSAGE"}'
 
 ### Read recent messages
 curl -sf "http://YOUR_HOST:4444/messages?after=0&limit=20"
@@ -309,6 +334,8 @@ curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
 curl -sf http://YOUR_HOST:4444/agents
 
 ### Conventions
+- Always register on startup and include session_id in every message
+- Use reply_to to thread responses to specific messages
 - Use channel "general" for cross-agent coordination
 - Use channel "deploy" for deploy requests and results
 - Use channel "bugs" for bug reports
@@ -333,20 +360,27 @@ Each incoming message triggers a notification — no polling loop needed.
 
 ### Step 3: Wire up common workflows
 
-**Deploy handoff (sandbox → host):**
+**Deploy handoff with threading (sandbox → host):**
 ```bash
-# Sandbox requests deploy
-curl -sf -X POST http://YOUR_HOST:4444/messages \
+# Sandbox registers and gets session ID
+REGISTER=$(curl -sf -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
-  -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}'
+  -d '{"name":"sandbox","role":"sandbox","capabilities":["code","git-push"]}')
+SID=$(echo "$REGISTER" | jq -r '.session_id')
 
-# Host picks it up, deploys, and responds
+# Sandbox requests deploy
+RESP=$(curl -sf -X POST http://YOUR_HOST:4444/messages \
+  -H "Content-Type: application/json" \
+  -d '{"sender":"sandbox","session_id":"'$SID'","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}')
+MSG_ID=$(echo "$RESP" | jq -r '.id')
+
+# Host picks it up, deploys, and replies to the original message
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"host","channel":"deploy","message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
+  -d '{"sender":"host","session_id":"HOST_SID","channel":"deploy","reply_to":'$MSG_ID',"message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
 
 # Sandbox checks for the response
-curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=LAST_ID"
+curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=$MSG_ID"
 ```
 
 **Polling loop (for agents without SSE support):**
@@ -372,7 +406,7 @@ LAST_ID=$(echo "$RESP" | jq -r '.last_id // 0')
 
 ### Dashboard
 
-Open `http://YOUR_HOST:4444` in a browser to see the live dashboard — real-time message feed, registered agents, channel filtering, and health stats.
+Open `http://YOUR_HOST:4444` in a browser to see the live dashboard — real-time message feed with session IDs, reply threading, registered agents, channel filtering, and health stats.
 
 ## Scaling
 
