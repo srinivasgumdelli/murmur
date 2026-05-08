@@ -8,8 +8,10 @@ import (
 type Message struct {
 	ID        int             `json:"id"`
 	Sender    string          `json:"sender"`
+	SessionID *string         `json:"session_id,omitempty"`
 	Channel   string          `json:"channel"`
 	To        *string         `json:"to"`
+	ReplyTo   *int            `json:"reply_to,omitempty"`
 	Message   string          `json:"message"`
 	Metadata  json.RawMessage `json:"metadata"`
 	CreatedAt time.Time       `json:"created_at"`
@@ -17,6 +19,7 @@ type Message struct {
 
 type Agent struct {
 	Name         string    `json:"name"`
+	SessionID    string    `json:"session_id"`
 	Role         string    `json:"role"`
 	Capabilities []string  `json:"capabilities"`
 	LastSeen     time.Time `json:"last_seen"`

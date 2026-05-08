@@ -44,12 +44,12 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, role, capabilities, last_seen)
-		 VALUES ($1, $2, $3, now())
-		 ON CONFLICT (name) DO UPDATE SET role = $2, capabilities = $3, last_seen = now()
-		 RETURNING name, role, capabilities, last_seen`,
+		`INSERT INTO agents (name, session_id, role, capabilities, last_seen)
+		 VALUES ($1, gen_random_uuid()::text, $2, $3, now())
+		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, capabilities = $3, last_seen = now()
+		 RETURNING name, session_id, role, capabilities, last_seen`,
 		req.Name, req.Role, req.Capabilities,
-	).Scan(&a.Name, &a.Role, &a.Capabilities, &a.LastSeen)
+	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.LastSeen)
 	if err != nil {
 		log.Printf("upsert agent: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -63,7 +63,7 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(),
-		`SELECT name, role, capabilities, last_seen FROM agents ORDER BY last_seen DESC`)
+		`SELECT name, session_id, role, capabilities, last_seen FROM agents ORDER BY last_seen DESC`)
 	if err != nil {
 		log.Printf("query agents: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -74,7 +74,7 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var agents []model.Agent
 	for rows.Next() {
 		var a model.Agent
-		if err := rows.Scan(&a.Name, &a.Role, &a.Capabilities, &a.LastSeen); err != nil {
+		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.LastSeen); err != nil {
 			log.Printf("scan agent: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

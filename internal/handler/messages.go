@@ -11,11 +11,13 @@ import (
 )
 
 type postMessageRequest struct {
-	Sender   string          `json:"sender"`
-	Channel  string          `json:"channel"`
-	To       *string         `json:"to"`
-	Message  string          `json:"message"`
-	Metadata json.RawMessage `json:"metadata"`
+	Sender    string          `json:"sender"`
+	SessionID *string         `json:"session_id"`
+	Channel   string          `json:"channel"`
+	To        *string         `json:"to"`
+	ReplyTo   *int            `json:"reply_to"`
+	Message   string          `json:"message"`
+	Metadata  json.RawMessage `json:"metadata"`
 }
 
 type listMessagesResponse struct {
@@ -55,11 +57,11 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	var msg model.Message
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO messages (sender, channel, "to", message, metadata)
-		 VALUES ($1, $2, $3, $4, $5)
-		 RETURNING id, sender, channel, "to", message, metadata, created_at`,
-		req.Sender, req.Channel, req.To, req.Message, req.Metadata,
-	).Scan(&msg.ID, &msg.Sender, &msg.Channel, &msg.To, &msg.Message, &msg.Metadata, &msg.CreatedAt)
+		`INSERT INTO messages (sender, session_id, channel, "to", reply_to, message, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, created_at`,
+		req.Sender, req.SessionID, req.Channel, req.To, req.ReplyTo, req.Message, req.Metadata,
+	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.CreatedAt)
 	if err != nil {
 		log.Printf("insert message: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -85,11 +87,11 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var query string
 	var args []any
 	if channel == "" {
-		query = `SELECT id, sender, channel, "to", message, metadata, created_at
+		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, created_at
 		 FROM messages WHERE id > $1 ORDER BY id ASC LIMIT $2`
 		args = []any{after, limit}
 	} else {
-		query = `SELECT id, sender, channel, "to", message, metadata, created_at
+		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, created_at
 		 FROM messages WHERE channel = $1 AND id > $2 ORDER BY id ASC LIMIT $3`
 		args = []any{channel, after, limit}
 	}
@@ -106,7 +108,7 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var lastID int
 	for rows.Next() {
 		var m model.Message
-		if err := rows.Scan(&m.ID, &m.Sender, &m.Channel, &m.To, &m.Message, &m.Metadata, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Sender, &m.SessionID, &m.Channel, &m.To, &m.ReplyTo, &m.Message, &m.Metadata, &m.CreatedAt); err != nil {
 			log.Printf("scan message: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

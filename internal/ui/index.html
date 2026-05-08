@@ -27,6 +27,8 @@
   .msg-sender { font-weight: 600; color: #fff; }
   .msg-channel { font-size: 11px; color: #555; background: #161616; padding: 1px 6px; border-radius: 3px; }
   .msg-to { font-size: 11px; color: #a78bfa; }
+  .msg-reply { font-size: 11px; color: #f472b6; cursor: pointer; }
+  .msg-session { font-size: 10px; color: #444; font-family: 'SF Mono', 'Cascadia Code', monospace; }
   .msg-time { font-size: 11px; color: #444; margin-left: auto; font-variant-numeric: tabular-nums; }
   .msg-body { color: #ccc; word-break: break-word; }
   .msg-meta { font-size: 11px; color: #555; margin-top: 2px; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
@@ -133,12 +135,16 @@ function renderMsg(msg) {
     meta = `<div class="msg-meta">${JSON.stringify(msg.metadata)}</div>`;
   }
   let toTag = msg.to ? `<span class="msg-to">&rarr; ${msg.to}</span>` : '';
+  let replyTag = msg.reply_to ? `<span class="msg-reply">&larr; #${msg.reply_to}</span>` : '';
+  let sessionTag = msg.session_id ? `<span class="msg-session">${msg.session_id.slice(0,8)}</span>` : '';
 
   div.innerHTML = `
     <div class="msg-header">
       <span class="msg-sender" style="color:${senderColor(msg.sender)}">${msg.sender}</span>
+      ${sessionTag}
       <span class="msg-channel">#${msg.channel}</span>
       ${toTag}
+      ${replyTag}
       <span class="msg-time">${formatTime(msg.created_at)}</span>
     </div>
     <div class="msg-body">${escapeHtml(msg.message)}</div>
@@ -213,7 +219,7 @@ async function loadAgents() {
       div.className = 'agent';
       const caps = (a.capabilities || []).map(c => `<span class="agent-cap">${c}</span>`).join('');
       div.innerHTML = `
-        <div class="agent-name" style="color:${senderColor(a.name)}">${a.name}</div>
+        <div class="agent-name" style="color:${senderColor(a.name)}">${a.name} <span class="msg-session">${a.session_id ? a.session_id.slice(0,8) : ''}</span></div>
         <div class="agent-role">${a.role}</div>
         <div class="agent-caps">${caps}</div>
         <div class="agent-seen">seen ${formatTime(a.last_seen)}</div>

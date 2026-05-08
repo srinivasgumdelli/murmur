@@ -85,9 +85,9 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 
 			var msg model.Message
 			err = pool.QueryRow(r.Context(),
-				`SELECT id, sender, channel, "to", message, metadata, created_at
+				`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, created_at
 				 FROM messages WHERE id = $1`, payload.ID,
-			).Scan(&msg.ID, &msg.Sender, &msg.Channel, &msg.To, &msg.Message, &msg.Metadata, &msg.CreatedAt)
+			).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.CreatedAt)
 			if err != nil {
 				log.Printf("fetch message %d: %v", payload.ID, err)
 				continue
