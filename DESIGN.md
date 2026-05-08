@@ -190,15 +190,26 @@ CREATE TRIGGER message_inserted
 
 ```
 murmur/
-├── main.go              # Single-file: HTTP server, SSE, Postgres, LISTEN/NOTIFY
+├── cmd/murmur/main.go          # Entrypoint: config, wiring, server start
+├── internal/
+│   ├── handler/
+│   │   ├── messages.go         # POST/GET /messages
+│   │   ├── stream.go           # GET /messages/stream (SSE)
+│   │   ├── agents.go           # POST/GET /agents
+│   │   └── health.go           # GET /health
+│   ├── model/
+│   │   └── model.go            # Message and Agent types
+│   └── schema/
+│       └── schema.go           # DDL and auto-migration
 ├── go.mod
 ├── go.sum
-├── DESIGN.md            # This file
-├── Dockerfile           # Multi-stage distroless build
-└── docker-compose.yml   # Bus + dedicated Postgres
+├── Makefile                    # build, run, docker, lint, test
+├── Dockerfile                  # Multi-stage distroless build
+├── docker-compose.yml          # Murmur + dedicated Postgres
+└── DESIGN.md                   # This file
 ```
 
-Single-file MVP. No packages, no interfaces, no abstractions.
+Standard Go project layout with `cmd/` entrypoint and `internal/` packages.
 
 ## Configuration
 

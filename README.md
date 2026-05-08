@@ -49,7 +49,7 @@ The bus is now running at `http://localhost:4444`. Postgres is included — no e
 
 ```bash
 # Requires Go 1.26+ and a running Postgres instance
-go build -o murmur .
+make build
 
 export BUS_DATABASE_URL="postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable"
 export BUS_PORT=4444
@@ -323,13 +323,24 @@ Monitor({
 
 ```
 murmur/
-├── main.go              # HTTP server, SSE, Postgres, LISTEN/NOTIFY
+├── cmd/murmur/main.go          # Entrypoint: config, wiring, server start
+├── internal/
+│   ├── handler/
+│   │   ├── messages.go         # POST/GET /messages
+│   │   ├── stream.go           # GET /messages/stream (SSE)
+│   │   ├── agents.go           # POST/GET /agents
+│   │   └── health.go           # GET /health
+│   ├── model/
+│   │   └── model.go            # Message and Agent types
+│   └── schema/
+│       └── schema.go           # DDL and auto-migration
 ├── go.mod
 ├── go.sum
-├── Dockerfile           # Multi-stage distroless build
-├── docker-compose.yml   # Murmur + dedicated Postgres
-├── DESIGN.md            # Design document
-└── README.md            # This file
+├── Makefile                    # build, run, docker, lint, test
+├── Dockerfile                  # Multi-stage distroless build
+├── docker-compose.yml          # Murmur + dedicated Postgres
+├── DESIGN.md                   # Design document
+└── README.md                   # This file
 ```
 
 ## License
