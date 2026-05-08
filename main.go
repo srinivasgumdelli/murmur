@@ -113,7 +113,7 @@ func handlePostMessage(pool *pgxpool.Pool) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(msg)
+		_ = json.NewEncoder(w).Encode(msg)
 	}
 }
 
@@ -166,7 +166,7 @@ func handleGetMessages(pool *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(listMessagesResponse{Messages: msgs, LastID: lastID})
+		_ = json.NewEncoder(w).Encode(listMessagesResponse{Messages: msgs, LastID: lastID})
 	}
 }
 
@@ -215,7 +215,7 @@ func handleStream(pool *pgxpool.Pool) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case <-heartbeat.C:
-				fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
+				_, _ = fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
 				flusher.Flush()
 			default:
 			}
@@ -253,7 +253,7 @@ func handleStream(pool *pgxpool.Pool) http.HandlerFunc {
 			}
 
 			data, _ := json.Marshal(msg)
-			fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
+			_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
 			flusher.Flush()
 		}
 	}
@@ -305,7 +305,7 @@ func handleAgents(pool *pgxpool.Pool) http.HandlerFunc {
 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(a)
+			_ = json.NewEncoder(w).Encode(a)
 
 		case http.MethodGet:
 			rows, err := pool.Query(r.Context(),
@@ -332,7 +332,7 @@ func handleAgents(pool *pgxpool.Pool) http.HandlerFunc {
 			}
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(agents)
+			_ = json.NewEncoder(w).Encode(agents)
 
 		default:
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -344,13 +344,13 @@ func handleHealth(pool *pgxpool.Pool, startTime time.Time) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var msgCount int
 		var agentCount int
-		pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM messages").Scan(&msgCount)
-		pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM agents").Scan(&agentCount)
+		_ = pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM messages").Scan(&msgCount)
+		_ = pool.QueryRow(r.Context(), "SELECT COUNT(*) FROM agents").Scan(&agentCount)
 
 		uptime := time.Since(startTime).Round(time.Second)
 
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		_ = json.NewEncoder(w).Encode(map[string]any{
 			"status":   "ok",
 			"messages": msgCount,
 			"agents":   agentCount,
