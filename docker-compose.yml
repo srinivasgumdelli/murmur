@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  bus:
+    build: .
+    ports:
+      - "4444:4444"
+    environment:
+      - BUS_PORT=4444
+      - BUS_DATABASE_URL=postgres://bus:bus@db:5432/bus?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bus
+      POSTGRES_PASSWORD: bus
+      POSTGRES_DB: bus
+    volumes:
+      - bus-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bus"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  bus-data:
