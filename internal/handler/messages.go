@@ -55,6 +55,21 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		req.Metadata = json.RawMessage(`{}`)
 	}
 
+	// Auto-register agent on first message if not already registered
+	var sessionID string
+	if err := pool.QueryRow(r.Context(),
+		`INSERT INTO agents (name, session_id, role, capabilities, last_seen)
+		 VALUES ($1, gen_random_uuid()::text, 'auto', '{}', now())
+		 ON CONFLICT (name) DO UPDATE SET last_seen = now()
+		 RETURNING session_id`,
+		req.Sender,
+	).Scan(&sessionID); err != nil {
+		log.Printf("auto-register agent %s: %v", req.Sender, err)
+	}
+	if req.SessionID == nil || *req.SessionID == "" {
+		req.SessionID = &sessionID
+	}
+
 	var msg model.Message
 	err := pool.QueryRow(r.Context(),
 		`INSERT INTO messages (sender, session_id, channel, "to", reply_to, message, metadata)
