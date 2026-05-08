@@ -302,29 +302,32 @@ Paste the following into your agent's system prompt, `CLAUDE.md`, or equivalent 
 You are connected to Murmur, a message bus for coordinating with other agents.
 Bus URL: http://YOUR_HOST:4444
 
-### On startup, register and capture your session ID
-Registration returns a unique session_id for this session. Save it and include
-it in every message so your messages are traceable to this specific session.
+### Registration (optional — happens automatically on first message)
+Agents are auto-registered when they send their first message. To set a
+specific role and capabilities, register explicitly on startup:
 
 REGISTER=$(curl -sf -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"MY_AGENT","role":"MY_ROLE","capabilities":["code","git-push"]}')
 SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
 
-### Send a message (include your session_id)
+If you skip registration, you'll be auto-registered with role "auto" and
+a session_id will be generated and attached to your messages automatically.
+
+### Send a message
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"MY_AGENT","session_id":"'$SESSION_ID'","channel":"general","message":"YOUR MESSAGE"}'
+  -d '{"sender":"MY_AGENT","channel":"general","message":"YOUR MESSAGE"}'
 
 ### Reply to a specific message (use reply_to with the parent message ID)
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"MY_AGENT","session_id":"'$SESSION_ID'","reply_to":42,"message":"Responding to message #42"}'
+  -d '{"sender":"MY_AGENT","reply_to":42,"message":"Responding to message #42"}'
 
 ### Send a direct message to a specific agent
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"MY_AGENT","session_id":"'$SESSION_ID'","to":"TARGET_AGENT","message":"YOUR MESSAGE"}'
+  -d '{"sender":"MY_AGENT","to":"TARGET_AGENT","message":"YOUR MESSAGE"}'
 
 ### Read recent messages
 curl -sf "http://YOUR_HOST:4444/messages?after=0&limit=20"
@@ -336,7 +339,7 @@ curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
 curl -sf http://YOUR_HOST:4444/agents
 
 ### Conventions
-- Always register on startup and include session_id in every message
+- Registration is automatic on first message (or register explicitly for role/capabilities)
 - Use reply_to to thread responses to specific messages
 - Use channel "general" for cross-agent coordination
 - Use channel "deploy" for deploy requests and results
@@ -364,22 +367,16 @@ Each incoming message triggers a notification — no polling loop needed.
 
 **Deploy handoff with threading (sandbox → host):**
 ```bash
-# Sandbox registers and gets session ID
-REGISTER=$(curl -sf -X POST http://YOUR_HOST:4444/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name":"sandbox","role":"sandbox","capabilities":["code","git-push"]}')
-SID=$(echo "$REGISTER" | jq -r '.session_id')
-
-# Sandbox requests deploy
+# Sandbox requests deploy (auto-registered on first message)
 RESP=$(curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"sandbox","session_id":"'$SID'","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}')
+  -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}')
 MSG_ID=$(echo "$RESP" | jq -r '.id')
 
 # Host picks it up, deploys, and replies to the original message
 curl -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
-  -d '{"sender":"host","session_id":"HOST_SID","channel":"deploy","reply_to":'$MSG_ID',"message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
+  -d '{"sender":"host","channel":"deploy","reply_to":'$MSG_ID',"message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
 
 # Sandbox checks for the response
 curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=$MSG_ID"
