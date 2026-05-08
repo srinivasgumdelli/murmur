@@ -14,6 +14,7 @@ type Message struct {
 	ReplyTo   *int            `json:"reply_to,omitempty"`
 	Message   string          `json:"message"`
 	Metadata  json.RawMessage `json:"metadata"`
+	Status    string          `json:"status"`
 	CreatedAt time.Time       `json:"created_at"`
 }
 

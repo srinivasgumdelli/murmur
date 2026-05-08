@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_to INT,
     message TEXT NOT NULL,
     metadata JSONB DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'sent',
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -52,6 +53,7 @@ CREATE TRIGGER message_inserted
 const migrations = `
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS session_id TEXT;
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to INT;
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'sent';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to);
 UPDATE agents SET session_id = gen_random_uuid()::text WHERE session_id IS NULL;

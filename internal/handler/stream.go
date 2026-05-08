@@ -85,9 +85,11 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 
 			var msg model.Message
 			err = pool.QueryRow(r.Context(),
-				`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, created_at
-				 FROM messages WHERE id = $1`, payload.ID,
-			).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.CreatedAt)
+				`UPDATE messages SET status = CASE WHEN status = 'sent' THEN 'delivered' ELSE status END
+				 WHERE id = $1
+				 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at`,
+				payload.ID,
+			).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
 			if err != nil {
 				log.Printf("fetch message %d: %v", payload.ID, err)
 				continue

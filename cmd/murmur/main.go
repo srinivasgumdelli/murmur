@@ -39,8 +39,9 @@ func main() {
 
 	startTime := time.Now()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/messages", handler.Messages(pool))
 	mux.HandleFunc("/messages/stream", handler.Stream(pool))
+	mux.HandleFunc("/messages/", handler.Messages(pool))
+	mux.HandleFunc("/messages", handler.Messages(pool))
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/health", handler.Health(pool, startTime))
 	mux.HandleFunc("/", ui.Handler())

@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/model"
@@ -27,13 +28,20 @@ type listMessagesResponse struct {
 
 func Messages(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
+		path := strings.TrimPrefix(r.URL.Path, "/messages")
+		path = strings.TrimPrefix(path, "/")
+
+		switch {
+		case path == "" && r.Method == http.MethodPost:
 			postMessage(pool, w, r)
-		case http.MethodGet:
+		case path == "" && r.Method == http.MethodGet:
 			getMessages(pool, w, r)
+		case strings.HasSuffix(path, "/ack") && r.Method == http.MethodPost:
+			ackMessage(pool, w, r, strings.TrimSuffix(path, "/ack"))
+		case path != "" && !strings.Contains(path, "/") && r.Method == http.MethodGet:
+			getMessage(pool, w, r, path)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			http.Error(w, "not found", http.StatusNotFound)
 		}
 	}
 }
@@ -72,11 +80,11 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	var msg model.Message
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO messages (sender, session_id, channel, "to", reply_to, message, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, created_at`,
+		`INSERT INTO messages (sender, session_id, channel, "to", reply_to, message, metadata, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, 'sent')
+		 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at`,
 		req.Sender, req.SessionID, req.Channel, req.To, req.ReplyTo, req.Message, req.Metadata,
-	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.CreatedAt)
+	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
 	if err != nil {
 		log.Printf("insert message: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -102,11 +110,11 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var query string
 	var args []any
 	if channel == "" {
-		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, created_at
+		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
 		 FROM messages WHERE id > $1 ORDER BY id ASC LIMIT $2`
 		args = []any{after, limit}
 	} else {
-		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, created_at
+		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
 		 FROM messages WHERE channel = $1 AND id > $2 ORDER BY id ASC LIMIT $3`
 		args = []any{channel, after, limit}
 	}
@@ -123,7 +131,7 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var lastID int
 	for rows.Next() {
 		var m model.Message
-		if err := rows.Scan(&m.ID, &m.Sender, &m.SessionID, &m.Channel, &m.To, &m.ReplyTo, &m.Message, &m.Metadata, &m.CreatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Sender, &m.SessionID, &m.Channel, &m.To, &m.ReplyTo, &m.Message, &m.Metadata, &m.Status, &m.CreatedAt); err != nil {
 			log.Printf("scan message: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -137,4 +145,62 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(listMessagesResponse{Messages: msgs, LastID: lastID})
+}
+
+func getMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, idStr string) {
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid message id", http.StatusBadRequest)
+		return
+	}
+
+	var msg model.Message
+	err = pool.QueryRow(r.Context(),
+		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
+		 FROM messages WHERE id = $1`, id,
+	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
+	if err != nil {
+		http.Error(w, "message not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(msg)
+}
+
+type ackRequest struct {
+	Agent string `json:"agent"`
+}
+
+func ackMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, idStr string) {
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid message id", http.StatusBadRequest)
+		return
+	}
+
+	var req ackRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if req.Agent == "" {
+		http.Error(w, "agent is required", http.StatusBadRequest)
+		return
+	}
+
+	var msg model.Message
+	err = pool.QueryRow(r.Context(),
+		`UPDATE messages SET status = 'acked'
+		 WHERE id = $1
+		 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at`,
+		id,
+	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
+	if err != nil {
+		http.Error(w, "message not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(msg)
 }

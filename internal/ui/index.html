@@ -29,6 +29,10 @@
   .msg-to { font-size: 11px; color: #a78bfa; }
   .msg-reply { font-size: 11px; color: #f472b6; cursor: pointer; }
   .msg-session { font-size: 10px; color: #444; font-family: 'SF Mono', 'Cascadia Code', monospace; }
+  .msg-status { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
+  .msg-status.sent { color: #888; background: #1a1a1a; }
+  .msg-status.delivered { color: #60a5fa; background: #172554; }
+  .msg-status.acked { color: #22c55e; background: #14532d; }
   .msg-time { font-size: 11px; color: #444; margin-left: auto; font-variant-numeric: tabular-nums; }
   .msg-body { color: #ccc; word-break: break-word; }
   .msg-meta { font-size: 11px; color: #555; margin-top: 2px; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
@@ -151,6 +155,7 @@ function renderMsg(msg) {
   }
   let replyTag = msg.reply_to ? `<span class="msg-reply">re: #${msg.reply_to}</span>` : '';
   let sessionTag = msg.session_id ? `<span class="msg-session">${msg.session_id.slice(0,8)}</span>` : '';
+  let statusTag = msg.status ? `<span class="msg-status ${msg.status}">${msg.status}</span>` : '';
 
   let flowHtml;
   if (msg.to) {
@@ -165,6 +170,7 @@ function renderMsg(msg) {
       ${sessionTag}
       <span class="msg-channel">#${msg.channel}</span>
       ${replyTag}
+      ${statusTag}
       <span class="msg-time">${formatTime(msg.created_at)}</span>
     </div>
     <div class="msg-body">${escapeHtml(msg.message)}</div>
