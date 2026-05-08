@@ -1,4 +1,4 @@
-# Agentic Bus — Message Bus for Agentic Systems
+# Murmur — Message Bus for Agentic Systems
 
 ## What
 
@@ -12,14 +12,14 @@ AI agent systems that span multiple sessions (host + sandbox, reviewer + builder
 - **Orchestrator dispatch**: Central bottleneck, no peer-to-peer, sequential only
 - **Shared memory/knowledge graph**: Wrong abstraction (search, not chat)
 
-Agentic Bus is a message bus. Agents decide what to say and who to talk to. The bus just delivers messages reliably with history.
+Murmur is a message bus. Agents decide what to say and who to talk to. The bus just delivers messages reliably with history.
 
 ## Architecture
 
 ```
 ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
 │   Agent A     │──HTTP──▶│              │◀──HTTP──│   Agent B     │
-│  (host/SSH)   │◀──SSE───│ Agentic Bus  │───SSE──▶│  (sandbox)    │
+│  (host/SSH)   │◀──SSE───│ Murmur  │───SSE──▶│  (sandbox)    │
 └──────────────┘         │    :4444     │         └──────────────┘
                           │              │
 ┌──────────────┐         │              │         ┌──────────────┐
@@ -189,7 +189,7 @@ CREATE TRIGGER message_inserted
 ## Project Structure
 
 ```
-agentic-bus/
+murmur/
 ├── main.go              # Single-file: HTTP server, SSE, Postgres, LISTEN/NOTIFY
 ├── go.mod
 ├── go.sum
@@ -205,7 +205,7 @@ Single-file MVP. No packages, no interfaces, no abstractions.
 Environment variables:
 ```bash
 BUS_PORT=4444                    # HTTP server port
-BUS_DATABASE_URL=postgres://bus:bus@postgres:5432/bus?sslmode=disable
+BUS_DATABASE_URL=postgres://murmur:murmur@postgres:5432/murmur?sslmode=disable
 ```
 
 ## Docker Compose
@@ -214,13 +214,13 @@ BUS_DATABASE_URL=postgres://bus:bus@postgres:5432/bus?sslmode=disable
 version: "3.8"
 
 services:
-  bus:
+  murmur:
     build: .
     ports:
       - "4444:4444"
     environment:
       - BUS_PORT=4444
-      - BUS_DATABASE_URL=postgres://bus:bus@db:5432/bus?sslmode=disable
+      - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
     depends_on:
       db:
         condition: service_healthy
@@ -229,20 +229,20 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: bus
-      POSTGRES_PASSWORD: bus
-      POSTGRES_DB: bus
+      POSTGRES_USER: murmur
+      POSTGRES_PASSWORD: murmur
+      POSTGRES_DB: murmur
     volumes:
-      - bus-data:/var/lib/postgresql/data
+      - murmur-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U bus"]
+      test: ["CMD-SHELL", "pg_isready -U murmur"]
       interval: 5s
       timeout: 3s
       retries: 5
     restart: unless-stopped
 
 volumes:
-  bus-data:
+  murmur-data:
 ```
 
 ## Dockerfile
@@ -254,19 +254,19 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/agentic-bus .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/murmur .
 
 FROM gcr.io/distroless/static:nonroot
-COPY --from=builder /bin/agentic-bus /agentic-bus
+COPY --from=builder /bin/murmur /murmur
 EXPOSE 4444
-ENTRYPOINT ["/agentic-bus"]
+ENTRYPOINT ["/murmur"]
 ```
 
 ## Deployment on YOUR_HOST
 
 Clone the repo and run:
 ```bash
-cd ~/agentic-bus
+cd ~/murmur
 docker compose up -d
 ```
 
@@ -368,7 +368,7 @@ No existing solution provides agent-to-agent chat:
 | MCP server-memory | — | Knowledge graph | No |
 | Google MCP Toolbox | 15K | Database connector | No |
 
-Agentic Bus fills this gap.
+Murmur fills this gap.
 
 ## Agent Connection Guide
 
@@ -379,7 +379,7 @@ Each Claude Code session has the Bash tool. Agents use `curl` to talk to the bus
 ### For host session (CLAUDE.local.md)
 
 ```markdown
-## Agentic Bus
+## Murmur
 
 Message bus for inter-session communication. Use curl via Bash tool.
 
@@ -408,7 +408,7 @@ curl -sf -X POST http://YOUR_HOST:4444/agents \
 ### For sandbox session (moat CLAUDE.md or agent prompt)
 
 ```markdown
-## Agentic Bus
+## Murmur
 
 Message bus for inter-session communication. Use curl via Bash tool.
 
@@ -492,8 +492,8 @@ The bus only needs to be reachable via HTTP. No special protocols, no MCP, no We
 ## Build
 
 ```bash
-cd ~/Repos/agentic-bus
-go build -o agentic-bus .
+cd ~/Repos/murmur
+go build -o murmur .
 
 # Or via Docker
 docker compose up -d --build
