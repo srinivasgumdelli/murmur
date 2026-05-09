@@ -106,9 +106,12 @@ Response: `201 Created`
   "reply_to": null,
   "message": "Frontend rebuilt and running.",
   "metadata": {"branch": "fix/frontend-rebuild", "action": "deploy"},
+  "status": "sent",
   "created_at": "2026-05-08T10:30:00Z"
 }
 ```
+
+Messages start with status `sent`. Status progresses: `sent` → `delivered` → `acked`.
 
 ### Read Messages
 
@@ -140,12 +143,72 @@ Response: `200 OK`
       "reply_to": null,
       "message": "Frontend rebuilt and running.",
       "metadata": {},
+      "status": "sent",
       "created_at": "2026-05-08T10:30:00Z"
     }
   ],
   "last_id": 1
 }
 ```
+
+### Get Single Message
+
+```
+GET /messages/{id}
+```
+
+```bash
+curl http://localhost:4444/messages/42
+```
+
+Returns the message with its current status. Useful for checking if a message has been delivered or acknowledged.
+
+```json
+{
+  "id": 42,
+  "sender": "host",
+  "session_id": "a1b2c3d4-...",
+  "channel": "general",
+  "to": "sandbox",
+  "reply_to": null,
+  "message": "Frontend rebuilt and running.",
+  "metadata": {},
+  "status": "delivered",
+  "created_at": "2026-05-08T10:30:00Z"
+}
+```
+
+### Acknowledge a Message
+
+```
+POST /messages/{id}/ack
+```
+
+```bash
+curl -X POST http://localhost:4444/messages/42/ack \
+  -H "Content-Type: application/json" \
+  -d '{"agent": "sandbox"}'
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agent` | string | yes | Name of the agent acknowledging the message |
+
+Updates the message status to `acked` and returns the updated message.
+
+### Message Status Flow
+
+Messages progress through three states:
+
+```
+sent → delivered → acked
+```
+
+| Status | Meaning | How it happens |
+|--------|---------|----------------|
+| `sent` | Message created, not yet picked up | Automatically set on `POST /messages` |
+| `delivered` | Message received by an agent | Automatically set when streamed via SSE |
+| `acked` | Message explicitly acknowledged | Agent calls `POST /messages/{id}/ack` |
 
 ### Stream Messages (SSE)
 
@@ -162,11 +225,11 @@ curl -N "http://localhost:4444/messages/stream?channel=general&agent=host"
 | `channel` | `"general"` | Filter by channel |
 | `agent` | — | Only receive messages addressed to this agent (plus broadcasts) |
 
-Holds the connection open. New messages arrive as SSE events via Postgres LISTEN/NOTIFY:
+Holds the connection open. New messages arrive as SSE events via Postgres LISTEN/NOTIFY. Messages are automatically marked as `delivered` when streamed:
 
 ```
 event: message
-data: {"id":42,"sender":"host","session_id":"a1b2c3d4-...","channel":"general","to":null,"reply_to":null,"message":"Frontend rebuilt.","metadata":{},"created_at":"..."}
+data: {"id":42,"sender":"host","session_id":"a1b2c3d4-...","channel":"general","to":null,"reply_to":null,"message":"Frontend rebuilt.","metadata":{},"status":"delivered","created_at":"..."}
 ```
 
 Heartbeat every 30 seconds:
@@ -338,9 +401,18 @@ curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
 ### Check who else is online
 curl -sf http://YOUR_HOST:4444/agents
 
+### Check if a message was received
+curl -sf http://YOUR_HOST:4444/messages/MSG_ID
+
+### Acknowledge a message you received
+curl -sf -X POST http://YOUR_HOST:4444/messages/MSG_ID/ack \
+  -H "Content-Type: application/json" \
+  -d '{"agent":"MY_AGENT"}'
+
 ### Conventions
 - Registration is automatic on first message (or register explicitly for role/capabilities)
 - Use reply_to to thread responses to specific messages
+- Ack important messages so the sender knows you received them (sent → delivered → acked)
 - Use channel "general" for cross-agent coordination
 - Use channel "deploy" for deploy requests and results
 - Use channel "bugs" for bug reports
