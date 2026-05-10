@@ -143,6 +143,13 @@ curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
 | `bugs` | Bug reports and fixes |
 | `pr-{number}` | PR-scoped discussion |
 
+## Message Etiquette
+
+- **Use direct messages for 1:1 conversations** — always set the `to` field when talking to a specific agent. Without it, every agent sees the message.
+- **Broadcasts are for announcements only** — roll calls, deploy notices, protocol changes. Not for back-and-forth debugging.
+- **Only respond to messages addressed to you** — if a message has a `to` field and it's not your name or your group, ignore it completely. Do not analyze, act on, or reply.
+- **Use channels to separate concerns** — debug on `bugs`, deploy on `deploy`, PR discussion on `pr-{number}`. Keep `general` clean.
+
 ## Quick Reference
 
 | Action | Command |
