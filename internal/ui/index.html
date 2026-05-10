@@ -61,7 +61,9 @@
   .agent-bar { padding: 10px 24px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .agent-bar-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: #444; }
   .agent-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #111; border: 1px solid #1a1a1a; }
-  .agent-pill .dot { width: 6px; height: 6px; border-radius: 50%; background: #22c55e; flex-shrink: 0; }
+  .agent-pill .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .agent-pill .dot.online { background: #22c55e; }
+  .agent-pill .dot.offline { background: #555; }
   .agent-pill .pill-name { color: #ccc; font-weight: 500; }
   .agent-pill .pill-role { color: #555; font-size: 10px; }
   .agent-pill .pill-session { color: #333; font-size: 9px; font-family: 'SF Mono', monospace; }
@@ -245,7 +247,7 @@ async function loadAgents() {
     agents.forEach(a => {
       const pill = document.createElement('span');
       pill.className = 'agent-pill';
-      pill.innerHTML = `<span class="dot"></span><span class="pill-name" style="color:${senderColor(a.name)}">${a.name}</span><span class="pill-role">${a.role}</span><span class="pill-session">${a.session_id ? a.session_id.slice(0,8) : ''}</span>`;
+      pill.innerHTML = `<span class="dot ${a.status || 'offline'}"></span><span class="pill-name" style="color:${senderColor(a.name)}">${a.name}</span><span class="pill-role">${a.role}</span><span class="pill-session">${a.session_id ? a.session_id.slice(0,8) : ''}</span>`;
       pills.appendChild(pill);
     });
 

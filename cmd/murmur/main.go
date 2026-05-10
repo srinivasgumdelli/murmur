@@ -23,6 +23,9 @@ func getenv(key, fallback string) string {
 func main() {
 	dbURL := getenv("BUS_DATABASE_URL", "postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable")
 	port := getenv("BUS_PORT", "4444")
+	adminKey := getenv("MURMUR_ADMIN_KEY", "")
+	authMode := getenv("MURMUR_AUTH", "off")
+	messageTTL := getenv("MURMUR_MESSAGE_TTL", "")
 
 	ctx := context.Background()
 
@@ -37,17 +40,30 @@ func main() {
 	}
 	log.Printf("schema applied")
 
+	notifier := handler.NewNotifier()
+	notifier.Listen(ctx, pool)
+
 	startTime := time.Now()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/messages/stream", handler.Stream(pool))
+	mux.HandleFunc("/messages/poll", handler.Poll(pool, notifier))
 	mux.HandleFunc("/messages/", handler.Messages(pool))
 	mux.HandleFunc("/messages", handler.Messages(pool))
+	mux.HandleFunc("/agents/", handler.Agents(pool))
 	mux.HandleFunc("/agents", handler.Agents(pool))
+	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
 	mux.HandleFunc("/health", handler.Health(pool, startTime))
 	mux.HandleFunc("/", ui.Handler())
 
+	var srv http.Handler = mux
+	if authMode != "" && authMode != "off" {
+		srv = handler.AuthMiddleware(pool, authMode, adminKey, mux)
+		log.Printf("auth mode: %s", authMode)
+	}
+
+	handler.StartReaper(ctx, pool, messageTTL)
 	log.Printf("murmur ready on :%s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
+	if err := http.ListenAndServe(":"+port, srv); err != nil {
 		log.Fatalf("server: %v", err)
 	}
 }

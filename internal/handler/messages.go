@@ -24,12 +24,23 @@ type postMessageRequest struct {
 type listMessagesResponse struct {
 	Messages []model.Message `json:"messages"`
 	LastID   int             `json:"last_id"`
+	Inbox    *Inbox          `json:"inbox,omitempty"`
+}
+
+type postMessageResponse struct {
+	model.Message
+	Inbox *Inbox `json:"inbox,omitempty"`
 }
 
 func Messages(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/messages")
 		path = strings.TrimPrefix(path, "/")
+
+		if path == "poll" || path == "stream" {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 
 		switch {
 		case path == "" && r.Method == http.MethodPost:
@@ -66,9 +77,9 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	// Auto-register agent on first message if not already registered
 	var sessionID string
 	if err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, capabilities, last_seen)
-		 VALUES ($1, gen_random_uuid()::text, 'auto', '{}', now())
-		 ON CONFLICT (name) DO UPDATE SET last_seen = now()
+		`INSERT INTO agents (name, session_id, role, capabilities, groups, status, last_seen)
+		 VALUES ($1, gen_random_uuid()::text, 'auto', '{}', '{}', 'online', now())
+		 ON CONFLICT (name) DO UPDATE SET status = 'online', last_seen = now()
 		 RETURNING session_id`,
 		req.Sender,
 	).Scan(&sessionID); err != nil {
@@ -91,9 +102,11 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	inbox := fetchInbox(r.Context(), pool, req.Sender)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(msg)
+	_ = json.NewEncoder(w).Encode(postMessageResponse{Message: msg, Inbox: inbox})
 }
 
 func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {

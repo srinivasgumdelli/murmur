@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -79,8 +80,19 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			if channel != "" && payload.Channel != channel {
 				continue
 			}
-			if agent != "" && payload.To != nil && *payload.To != agent {
-				continue
+			if agent != "" && payload.To != nil {
+				if group, ok := strings.CutPrefix(*payload.To, "@"); ok {
+					var isMember bool
+					_ = pool.QueryRow(r.Context(),
+						`SELECT EXISTS(SELECT 1 FROM agents WHERE name = $1 AND $2 = ANY(groups))`,
+						agent, group,
+					).Scan(&isMember)
+					if !isMember {
+						continue
+					}
+				} else if *payload.To != agent {
+					continue
+				}
 			}
 
 			var msg model.Message

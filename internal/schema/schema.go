@@ -29,7 +29,15 @@ CREATE TABLE IF NOT EXISTS agents (
     session_id TEXT NOT NULL,
     role TEXT NOT NULL,
     capabilities TEXT[] DEFAULT '{}',
+    groups TEXT[] DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'online',
     last_seen TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS api_keys (
+    key_hash TEXT PRIMARY KEY,
+    agent TEXT NOT NULL REFERENCES agents(name),
+    created_at TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE OR REPLACE FUNCTION notify_new_message()
@@ -58,6 +66,14 @@ ALTER TABLE agents ADD COLUMN IF NOT EXISTS session_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to);
 UPDATE agents SET session_id = gen_random_uuid()::text WHERE session_id IS NULL;
 ALTER TABLE agents ALTER COLUMN session_id SET NOT NULL;
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'online';
+UPDATE agents SET status = 'online' WHERE status IS NULL;
+CREATE TABLE IF NOT EXISTS api_keys (
+    key_hash TEXT PRIMARY KEY,
+    agent TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS groups TEXT[] DEFAULT '{}';
 `
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {

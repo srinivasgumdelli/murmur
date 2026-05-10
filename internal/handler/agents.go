@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/model"
@@ -13,17 +14,24 @@ type registerAgentRequest struct {
 	Name         string   `json:"name"`
 	Role         string   `json:"role"`
 	Capabilities []string `json:"capabilities"`
+	Groups       []string `json:"groups"`
 }
 
 func Agents(pool *pgxpool.Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
+		path := strings.TrimPrefix(r.URL.Path, "/agents")
+		path = strings.TrimPrefix(path, "/")
+
+		switch {
+		case path == "" && r.Method == http.MethodPost:
 			registerAgent(pool, w, r)
-		case http.MethodGet:
+		case path == "" && r.Method == http.MethodGet:
 			listAgents(pool, w, r)
+		case strings.HasSuffix(path, "/heartbeat") && r.Method == http.MethodPost:
+			agentName := strings.TrimSuffix(path, "/heartbeat")
+			heartbeat(pool, w, r, agentName)
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			http.Error(w, "not found", http.StatusNotFound)
 		}
 	}
 }
@@ -41,15 +49,18 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	if req.Capabilities == nil {
 		req.Capabilities = []string{}
 	}
+	if req.Groups == nil {
+		req.Groups = []string{}
+	}
 
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, capabilities, last_seen)
-		 VALUES ($1, gen_random_uuid()::text, $2, $3, now())
-		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, capabilities = $3, last_seen = now()
-		 RETURNING name, session_id, role, capabilities, last_seen`,
-		req.Name, req.Role, req.Capabilities,
-	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.LastSeen)
+		`INSERT INTO agents (name, session_id, role, capabilities, groups, status, last_seen)
+		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, 'online', now())
+		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, capabilities = $3, groups = $4, status = 'online', last_seen = now()
+		 RETURNING name, session_id, role, capabilities, groups, status, last_seen`,
+		req.Name, req.Role, req.Capabilities, req.Groups,
+	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if err != nil {
 		log.Printf("upsert agent: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -63,7 +74,7 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(),
-		`SELECT name, session_id, role, capabilities, last_seen FROM agents ORDER BY last_seen DESC`)
+		`SELECT name, session_id, role, capabilities, groups, status, last_seen FROM agents ORDER BY last_seen DESC`)
 	if err != nil {
 		log.Printf("query agents: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -74,7 +85,7 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var agents []model.Agent
 	for rows.Next() {
 		var a model.Agent
-		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.LastSeen); err != nil {
+		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen); err != nil {
 			log.Printf("scan agent: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -87,4 +98,28 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(agents)
+}
+
+type heartbeatResponse struct {
+	model.Agent
+	Inbox *Inbox `json:"inbox,omitempty"`
+}
+
+func heartbeat(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name string) {
+	var a model.Agent
+	err := pool.QueryRow(r.Context(),
+		`UPDATE agents SET status = 'online', last_seen = now()
+		 WHERE name = $1
+		 RETURNING name, session_id, role, capabilities, groups, status, last_seen`,
+		name,
+	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	if err != nil {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+
+	inbox := fetchInbox(r.Context(), pool, name)
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(heartbeatResponse{Agent: a, Inbox: inbox})
 }

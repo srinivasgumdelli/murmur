@@ -298,7 +298,10 @@ curl -X POST http://YOUR_HOST:4444/messages \
 # Read
 curl http://YOUR_HOST:4444/messages?after=0&limit=10
 
-# Stream
+# Long poll (recommended for agents)
+curl http://YOUR_HOST:4444/messages/poll?agent=host&after=0&timeout=30
+
+# Stream (dashboard only)
 curl -N http://YOUR_HOST:4444/messages/stream
 
 # Register
@@ -407,8 +410,9 @@ curl -sf http://YOUR_HOST:4444/messages?after=0&limit=20
 ### Read new messages since last check
 curl -sf http://YOUR_HOST:4444/messages?after=LAST_ID
 
-### Stream messages (use with Monitor tool for real-time)
-Monitor: curl -N http://YOUR_HOST:4444/messages/stream
+### Long poll for messages (recommended for real-time)
+# Server holds request up to 30s, returns instantly on new messages
+curl -sf http://YOUR_HOST:4444/messages/poll?agent=host&after=LAST_ID&timeout=30
 
 ### Register on startup
 curl -sf -X POST http://YOUR_HOST:4444/agents \
@@ -469,14 +473,14 @@ curl -sf http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID
 
 **Real-time monitoring (host uses Monitor tool)**:
 ```bash
-# In Claude Code, use the Monitor tool with the SSE stream
+# In Claude Code, use the Monitor tool with long polling
 Monitor({
-  description: "Bus messages",
+  description: "Murmur long poll for host",
   persistent: true,
-  command: "curl -N http://YOUR_HOST:4444/messages/stream"
+  command: "TMP=$(mktemp); LAST_ID=0; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=host&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
 })
 ```
-Each new message triggers a notification. No polling needed.
+Each new message triggers a notification. Long poll holds for 30s and returns instantly on new messages.
 
 **Direct message (1:1)**:
 ```bash
@@ -485,8 +489,8 @@ curl -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","to":"host","message":"Is the RDS still alive?"}'
 
-# Host streams only messages addressed to it
-curl -N "http://YOUR_HOST:4444/messages/stream?agent=host"
+# Host long-polls for messages addressed to it
+curl -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=0&timeout=30"
 ```
 
 ### Network requirements

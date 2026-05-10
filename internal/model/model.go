@@ -23,5 +23,7 @@ type Agent struct {
 	SessionID    string    `json:"session_id"`
 	Role         string    `json:"role"`
 	Capabilities []string  `json:"capabilities"`
+	Groups       []string  `json:"groups"`
+	Status       string    `json:"status"`
 	LastSeen     time.Time `json:"last_seen"`
 }
