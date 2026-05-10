@@ -78,9 +78,18 @@ func fetchPollMessages(ctx context.Context, pool *pgxpool.Pool, agent string, af
 		 FROM messages
 		 WHERE id > $1
 		 AND (
-		     "to" IS NULL
+		     sender = $2
 		     OR "to" = $2
 		     OR "to" IN (SELECT '@' || unnest(groups) FROM agents WHERE name = $2)
+		     OR ("to" IS NULL AND reply_to IS NULL)
+		     OR ("to" IS NULL AND reply_to IS NOT NULL AND EXISTS (
+		         SELECT 1 FROM messages AS parent
+		         WHERE parent.id = messages.reply_to AND parent.sender = $2
+		     ))
+		     OR ("to" IS NULL AND reply_to IS NOT NULL AND EXISTS (
+		         SELECT 1 FROM messages AS sibling
+		         WHERE sibling.reply_to = messages.reply_to AND sibling.sender = $2
+		     ))
 		 )
 		 ORDER BY id ASC
 		 LIMIT 50`,
