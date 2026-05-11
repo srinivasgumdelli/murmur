@@ -9,24 +9,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/srinivasgumdelli/murmur/internal/model"
 )
 
 type pollResponse struct {
-	Messages []pollMessage `json:"messages"`
-	LastID   int           `json:"last_id"`
-}
-
-type pollMessage struct {
-	ID        int             `json:"id"`
-	Sender    string          `json:"sender"`
-	SessionID *string         `json:"session_id,omitempty"`
-	Channel   string          `json:"channel"`
-	To        *string         `json:"to"`
-	ReplyTo   *int            `json:"reply_to,omitempty"`
-	Message   string          `json:"message"`
-	Metadata  json.RawMessage `json:"metadata"`
-	Status    string          `json:"status"`
-	CreatedAt time.Time       `json:"created_at"`
+	Messages []model.Message `json:"messages"`
+	LastID   int             `json:"last_id"`
 }
 
 func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
@@ -59,7 +47,7 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSec)*time.Second)
 		defer cancel()
 
-		notifier.Wait(ctx)
+		notifier.Wait(ctx, agent)
 
 		// Refresh heartbeat after wait
 		_, _ = pool.Exec(r.Context(),
@@ -68,7 +56,7 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 		// Check again after wakeup
 		msgs, lastID = fetchPollMessages(r.Context(), pool, agent, after)
 		if msgs == nil {
-			msgs = []pollMessage{}
+			msgs = []model.Message{}
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -76,7 +64,7 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 	}
 }
 
-func fetchPollMessages(ctx context.Context, pool *pgxpool.Pool, agent string, after int) ([]pollMessage, int) {
+func fetchPollMessages(ctx context.Context, pool *pgxpool.Pool, agent string, after int) ([]model.Message, int) {
 	rows, err := pool.Query(ctx,
 		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
 		 FROM messages
@@ -105,11 +93,11 @@ func fetchPollMessages(ctx context.Context, pool *pgxpool.Pool, agent string, af
 	}
 	defer rows.Close()
 
-	var msgs []pollMessage
+	var msgs []model.Message
 	var lastID int
 	var ids []int
 	for rows.Next() {
-		var m pollMessage
+		var m model.Message
 		if err := rows.Scan(&m.ID, &m.Sender, &m.SessionID, &m.Channel, &m.To, &m.ReplyTo, &m.Message, &m.Metadata, &m.Status, &m.CreatedAt); err != nil {
 			log.Printf("poll scan: %v", err)
 			continue
