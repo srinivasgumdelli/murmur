@@ -67,6 +67,8 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	postSystemMessage(r.Context(), pool, a.Name+" joined ("+a.Role+")")
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(a)

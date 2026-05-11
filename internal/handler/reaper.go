@@ -21,15 +21,25 @@ func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string) {
 			case <-ctx.Done():
 				return
 			case <-agentTicker.C:
-				res, err := pool.Exec(ctx,
+				rows, err := pool.Query(ctx,
 					`UPDATE agents SET status = 'offline'
-					 WHERE status = 'online' AND last_seen < now() - interval '3 minutes'`)
+					 WHERE status = 'online' AND last_seen < now() - interval '3 minutes'
+					 RETURNING name`)
 				if err != nil {
 					log.Printf("reaper: %v", err)
 					continue
 				}
-				if res.RowsAffected() > 0 {
-					log.Printf("reaper: marked %d agent(s) offline", res.RowsAffected())
+				var count int
+				for rows.Next() {
+					var name string
+					if err := rows.Scan(&name); err == nil {
+						postSystemMessage(ctx, pool, name+" went offline")
+						count++
+					}
+				}
+				rows.Close()
+				if count > 0 {
+					log.Printf("reaper: marked %d agent(s) offline", count)
 				}
 			case <-messageTicker.C:
 				if messageTTL == "" {
