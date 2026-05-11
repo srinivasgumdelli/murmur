@@ -26,7 +26,6 @@ func main() {
 	adminKey := getenv("MURMUR_ADMIN_KEY", "")
 	authMode := getenv("MURMUR_AUTH", "off")
 	messageTTL := getenv("MURMUR_MESSAGE_TTL", "")
-	agentTTL := getenv("MURMUR_AGENT_TTL", "30 minutes")
 
 	ctx := context.Background()
 
@@ -62,7 +61,7 @@ func main() {
 		log.Printf("auth mode: %s", authMode)
 	}
 
-	handler.StartReaper(ctx, pool, messageTTL, agentTTL)
+	handler.StartReaper(ctx, pool, messageTTL)
 	log.Printf("murmur ready on :%s", port)
 	if err := http.ListenAndServe(":"+port, srv); err != nil {
 		log.Fatalf("server: %v", err)
