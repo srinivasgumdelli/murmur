@@ -11,19 +11,19 @@ import (
 
 type Notifier struct {
 	mu      sync.Mutex
-	waiters map[chan struct{}]struct{}
+	waiters map[chan struct{}]string // chan -> agent name
 }
 
 func NewNotifier() *Notifier {
 	return &Notifier{
-		waiters: make(map[chan struct{}]struct{}),
+		waiters: make(map[chan struct{}]string),
 	}
 }
 
-func (n *Notifier) Wait(ctx context.Context) {
+func (n *Notifier) Wait(ctx context.Context, agent string) {
 	ch := make(chan struct{}, 1)
 	n.mu.Lock()
-	n.waiters[ch] = struct{}{}
+	n.waiters[ch] = agent
 	n.mu.Unlock()
 
 	defer func() {
@@ -38,12 +38,17 @@ func (n *Notifier) Wait(ctx context.Context) {
 	}
 }
 
-func (n *Notifier) notifyAll() {
+// notifyAll wakes waiters that could be interested in a message addressed to `to`.
+// Broadcasts (to==nil) and group messages (to starts with '@') wake everyone since
+// group membership can't be resolved without a DB query.
+func (n *Notifier) notifyAll(to *string) {
 	n.mu.Lock()
-	for ch := range n.waiters {
-		select {
-		case ch <- struct{}{}:
-		default:
+	for ch, agent := range n.waiters {
+		if to == nil || len(*to) > 0 && (*to)[0] == '@' || *to == agent {
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
 		}
 	}
 	n.mu.Unlock()
@@ -80,11 +85,12 @@ func (n *Notifier) listenLoop(ctx context.Context, pool *pgxpool.Pool) error {
 		}
 
 		var payload struct {
-			ID      int    `json:"id"`
-			Channel string `json:"channel"`
+			ID      int     `json:"id"`
+			Channel string  `json:"channel"`
+			To      *string `json:"to"`
 		}
 		_ = json.Unmarshal([]byte(notification.Payload), &payload)
 
-		n.notifyAll()
+		n.notifyAll(payload.To)
 	}
 }

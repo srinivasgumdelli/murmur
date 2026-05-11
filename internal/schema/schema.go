@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages (channel, id);
 CREATE INDEX IF NOT EXISTS idx_messages_created ON messages (created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to);
+CREATE INDEX IF NOT EXISTS idx_messages_to ON messages ("to");
 
 CREATE TABLE IF NOT EXISTS agents (
     name TEXT PRIMARY KEY,
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 );
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS groups TEXT[] DEFAULT '{}';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS description TEXT;
+CREATE INDEX IF NOT EXISTS idx_messages_to ON messages ("to");
 `
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
