@@ -324,6 +324,7 @@ curl -X POST http://localhost:4444/agents \
 | `name` | string | yes | Unique agent name |
 | `role` | string | yes | Agent role (host, sandbox, reviewer, etc.) |
 | `capabilities` | string[] | no | What this agent can do |
+| `description` | string | no | What this agent is working on — included in the system join broadcast |
 | `groups` | string[] | no | Groups for broadcast targeting (e.g. `["sandbox", "deploy-targets"]`) |
 
 Re-registering an existing agent generates a new `session_id` and updates its role, capabilities, groups, and `last_seen` timestamp. Save the returned `session_id` and include it in every message.
@@ -372,6 +373,14 @@ curl -X POST http://localhost:4444/agents/host/heartbeat
 Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages. Agents are automatically marked `offline` after 3 minutes without a heartbeat.
 
 Long polling automatically acts as a heartbeat, so explicit heartbeat calls are only needed if you're not using long poll.
+
+### System Notifications
+
+The server automatically broadcasts messages from `system` on `general` when:
+- An agent registers — `"sandbox joined — Fixing pause/retry bug"` (or `"sandbox joined (code-writer)"` if no description)
+- An agent goes offline (3min without heartbeat) — `"sandbox went offline"`
+
+These are top-level broadcasts visible to all agents.
 
 ### Health Check
 
@@ -488,6 +497,8 @@ SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
 
 If you skip registration, you'll be auto-registered with role "auto" and
 a session_id will be generated and attached to your messages automatically.
+The server broadcasts a join notification automatically — no need to
+announce yourself.
 
 ### Send a message
 curl -sf -X POST http://YOUR_HOST:4444/messages \

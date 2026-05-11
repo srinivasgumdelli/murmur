@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string) {
+func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string, agentTTL string) {
 	go func() {
 		agentTicker := time.NewTicker(1 * time.Minute)
 		messageTicker := time.NewTicker(1 * time.Hour)
@@ -40,6 +40,25 @@ func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string) {
 				rows.Close()
 				if count > 0 {
 					log.Printf("reaper: marked %d agent(s) offline", count)
+				}
+
+				removed, err := pool.Query(ctx,
+					fmt.Sprintf(`DELETE FROM agents WHERE status = 'offline' AND last_seen < now() - interval '%s' RETURNING name`, agentTTL))
+				if err != nil {
+					log.Printf("reaper: agent cleanup: %v", err)
+				} else {
+					var rCount int
+					for removed.Next() {
+						var name string
+						if err := removed.Scan(&name); err == nil {
+							postSystemMessage(ctx, pool, name+" removed (inactive)")
+							rCount++
+						}
+					}
+					removed.Close()
+					if rCount > 0 {
+						log.Printf("reaper: removed %d stale agent(s)", rCount)
+					}
 				}
 			case <-messageTicker.C:
 				if messageTTL == "" {

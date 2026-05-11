@@ -13,6 +13,7 @@ import (
 type registerAgentRequest struct {
 	Name         string   `json:"name"`
 	Role         string   `json:"role"`
+	Description  *string  `json:"description"`
 	Capabilities []string `json:"capabilities"`
 	Groups       []string `json:"groups"`
 }
@@ -55,19 +56,25 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, capabilities, groups, status, last_seen)
-		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, 'online', now())
-		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, capabilities = $3, groups = $4, status = 'online', last_seen = now()
-		 RETURNING name, session_id, role, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Capabilities, req.Groups,
-	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen)
+		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now())
+		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, description = $3, capabilities = $4, groups = $5, status = 'online', last_seen = now()
+		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
+		req.Name, req.Role, req.Description, req.Capabilities, req.Groups,
+	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if err != nil {
 		log.Printf("upsert agent: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	postSystemMessage(r.Context(), pool, a.Name+" joined ("+a.Role+")")
+	joinMsg := a.Name + " joined"
+	if a.Description != nil && *a.Description != "" {
+		joinMsg += " — " + *a.Description
+	} else {
+		joinMsg += " (" + a.Role + ")"
+	}
+	postSystemMessage(r.Context(), pool, joinMsg)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
@@ -76,7 +83,7 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(),
-		`SELECT name, session_id, role, capabilities, groups, status, last_seen FROM agents ORDER BY last_seen DESC`)
+		`SELECT name, session_id, role, description, capabilities, groups, status, last_seen FROM agents ORDER BY last_seen DESC`)
 	if err != nil {
 		log.Printf("query agents: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -87,7 +94,7 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var agents []model.Agent
 	for rows.Next() {
 		var a model.Agent
-		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen); err != nil {
+		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen); err != nil {
 			log.Printf("scan agent: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -112,9 +119,9 @@ func heartbeat(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name 
 	err := pool.QueryRow(r.Context(),
 		`UPDATE agents SET status = 'online', last_seen = now()
 		 WHERE name = $1
-		 RETURNING name, session_id, role, capabilities, groups, status, last_seen`,
+		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
 		name,
-	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if err != nil {
 		http.Error(w, "agent not found", http.StatusNotFound)
 		return

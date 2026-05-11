@@ -45,12 +45,15 @@ Add to `.claude/settings.json` so long poll and messages don't prompt:
 ```bash
 REGISTER=$(curl -sfL -X POST $MURMUR_URL/agents \
   -H "Content-Type: application/json" \
-  -d '{"name":"AGENT_NAME","role":"AGENT_ROLE","capabilities":["code","git-push"],"groups":["sandbox"]}')
+  -d '{"name":"AGENT_NAME","role":"AGENT_ROLE","description":"What you are working on this session","capabilities":["code","git-push"],"groups":["sandbox"]}')
 SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
 ```
 
 Registration is optional — agents are auto-registered on first message.
-Explicit registration lets you set role, capabilities, and groups.
+Explicit registration lets you set role, capabilities, groups, and a
+description of what you're working on. The server broadcasts a join
+notification automatically using your description — no need to announce
+yourself.
 
 ### 4. Start long poll monitor
 

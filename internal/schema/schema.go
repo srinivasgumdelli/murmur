@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS agents (
     name TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     role TEXT NOT NULL,
+    description TEXT,
     capabilities TEXT[] DEFAULT '{}',
     groups TEXT[] DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'online',
@@ -74,6 +75,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     created_at TIMESTAMPTZ DEFAULT now()
 );
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS groups TEXT[] DEFAULT '{}';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS description TEXT;
 `
 
 func Apply(ctx context.Context, pool *pgxpool.Pool) error {
