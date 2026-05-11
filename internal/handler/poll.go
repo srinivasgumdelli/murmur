@@ -61,6 +61,10 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 
 		notifier.Wait(ctx)
 
+		// Refresh heartbeat after wait
+		_, _ = pool.Exec(r.Context(),
+			`UPDATE agents SET status = 'online', last_seen = now() WHERE name = $1`, agent)
+
 		// Check again after wakeup
 		msgs, lastID = fetchPollMessages(r.Context(), pool, agent, after)
 		if msgs == nil {
