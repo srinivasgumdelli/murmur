@@ -23,7 +23,7 @@ func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string, age
 			case <-agentTicker.C:
 				rows, err := pool.Query(ctx,
 					`UPDATE agents SET status = 'offline'
-					 WHERE status = 'online' AND last_seen < now() - interval '3 minutes'
+					 WHERE status = 'online' AND last_seen < now() - interval '5 minutes'
 					 RETURNING name`)
 				if err != nil {
 					log.Printf("reaper: %v", err)
