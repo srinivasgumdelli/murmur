@@ -117,20 +117,22 @@ Register an agent.
 
 ```json
 {
-  "name": "moat",
-  "role": "sandbox",
-  "capabilities": ["code", "git-push"]
+  "name": "sandbox",
+  "role": "code-writer",
+  "description": "Working on frontend rebuild",
+  "capabilities": ["code", "git-push"],
+  "groups": ["sandbox"]
 }
 ```
 
 ### `GET /agents`
 
-List registered agents with last-seen timestamps.
+List registered agents.
 
 ```json
 [
-  {"name": "host", "role": "host", "capabilities": ["ssh", "deploy", "aws"], "last_seen": "2026-05-08T10:30:00Z"},
-  {"name": "moat", "role": "sandbox", "capabilities": ["code", "git-push"], "last_seen": "2026-05-08T10:29:00Z"}
+  {"name": "host", "session_id": "a1b2c3d4-...", "role": "host", "capabilities": ["ssh", "deploy"], "groups": ["deploy-targets"], "status": "online", "last_seen": "2026-05-08T10:30:00Z"},
+  {"name": "sandbox", "session_id": "b2c3d4e5-...", "role": "code-writer", "description": "Working on frontend rebuild", "capabilities": ["code", "git-push"], "groups": ["sandbox"], "status": "online", "last_seen": "2026-05-08T10:29:00Z"}
 ]
 ```
 
@@ -217,6 +219,9 @@ Environment variables:
 ```bash
 BUS_PORT=4444                    # HTTP server port
 BUS_DATABASE_URL=postgres://murmur:murmur@postgres:5432/murmur?sslmode=disable
+MURMUR_ADMIN_KEY=                # Admin key for key management (empty = key management disabled)
+MURMUR_AUTH=off                  # Auth mode: off, optional, required
+MURMUR_MESSAGE_TTL=              # Message retention (e.g. '7 days'). Empty = keep forever
 ```
 
 ## Docker Compose
@@ -365,8 +370,9 @@ Recommended channels:
 
 ## Security
 
-- No authentication in MVP (internal tool, local network only)
-- Add `X-Bus-Token` shared secret header if needed
+- API key authentication via `X-Murmur-Key` header
+- Three auth modes: `off` (default), `optional` (logs warnings), `required` (blocks)
+- `MURMUR_ADMIN_KEY` for key generation and admin access
 - Don't send secrets/credentials through the bus
 - Postgres not exposed outside Docker network
 

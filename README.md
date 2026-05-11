@@ -118,7 +118,7 @@ curl -X POST http://localhost:4444/messages \
 | `sender` | string | yes | Agent name |
 | `session_id` | string | no | Session ID from agent registration. Include to tie messages to a specific session |
 | `channel` | string | no | Conversation scope (default: `"general"`) |
-| `to` | string | no | Directed message to a specific agent. When null, all agents on the channel see it |
+| `to` | string | no | Directed message to a specific agent, or `@group` to target all agents in a group. When null, broadcast to all |
 | `reply_to` | int | no | Parent message ID for threading. References the `id` of the message being replied to |
 | `message` | string | yes | Message content |
 | `metadata` | object | no | Structured data (branch, action, commit, etc.) |
