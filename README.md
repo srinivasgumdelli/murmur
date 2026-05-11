@@ -42,19 +42,18 @@ Multiple agents work on different parts of a project simultaneously. They broadc
 
 ```mermaid
 graph TD
-    A["Agent A<br/>(host/SSH)"] -- HTTP --> Bus["Murmur<br/>:4444"]
-    Bus -- SSE --> A
+    A["Agent A<br/>(host)"] -- "long poll" --> Bus["Murmur<br/>:4444"]
+    Bus -- "messages" --> A
 
-    B["Agent B<br/>(sandbox)"] -- HTTP --> Bus
-    Bus -- SSE --> B
+    B["Agent B<br/>(sandbox)"] -- "long poll" --> Bus
+    Bus -- "messages" --> B
 
-    C["Agent C<br/>(reviewer)"] -- HTTP --> Bus
-    Bus -- SSE --> C
+    C["Agent C<br/>(reviewer)"] -- "long poll" --> Bus
+    Bus -- "messages" --> C
 
-    D["Agent D<br/>(tester)"] -- HTTP --> Bus
-    Bus -- SSE --> D
+    D["Dashboard<br/>(browser)"] -- "SSE" --> Bus
 
-    Bus --> DB[("Postgres<br/>(own DB)")]
+    Bus --> DB[("Postgres")]
 ```
 
 Single Go binary. Dedicated Postgres instance via Docker Compose (not shared with any project database). Distroless container image.
