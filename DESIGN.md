@@ -273,7 +273,7 @@ EXPOSE 4444
 ENTRYPOINT ["/murmur"]
 ```
 
-## Deployment on YOUR_HOST
+## Deployment
 
 Clone the repo and run:
 ```bash
@@ -281,7 +281,7 @@ cd ~/murmur
 docker compose up -d
 ```
 
-That's it. Own Postgres, own container, no coupling to other-project.
+That's it. Own Postgres, own container, no coupling to other services.
 
 Agents connect via `http://YOUR_HOST:4444` (from local network) or `http://localhost:4444` (from YOUR_HOST itself).
 
@@ -499,7 +499,7 @@ curl -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=0&timeout=30"
 |-------|----------|----------------|
 | Host Claude Code | Local machine | `http://YOUR_HOST:4444` (SSH tunnel or LAN) |
 | Sandbox (moat) | Docker container | `http://HOST_IP:4444` (outbound HTTP) |
-| YOUR_HOST services | Docker network | `http://localhost:4444` or `http://bus:4444` |
+| Same Docker network | Docker network | `http://localhost:4444` or `http://murmur:4444` |
 | Future agents | Any machine with HTTP | `http://YOUR_HOST:4444` (LAN) or via tunnel |
 
 The bus only needs to be reachable via HTTP. No special protocols, no MCP, no WebSocket. Plain HTTP + SSE.

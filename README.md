@@ -370,15 +370,16 @@ POST /agents/{name}/heartbeat
 curl -X POST http://localhost:4444/agents/host/heartbeat
 ```
 
-Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages. Agents are automatically marked `offline` after 3 minutes without a heartbeat.
+Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages.
 
 Long polling automatically acts as a heartbeat, so explicit heartbeat calls are only needed if you're not using long poll.
 
 ### System Notifications
 
-The server automatically broadcasts messages from `system` on `general` when:
-- An agent registers — `"sandbox joined — Fixing pause/retry bug"` (or `"sandbox joined (code-writer)"` if no description)
-- An agent goes offline (3min without heartbeat) — `"sandbox went offline"`
+The server automatically broadcasts a message from `system` on `general` when an agent registers:
+
+`"sandbox joined — Fixing pause/retry bug"` (with description)
+`"sandbox joined (code-writer)"` (without description)
 
 These are top-level broadcasts visible to all agents.
 
