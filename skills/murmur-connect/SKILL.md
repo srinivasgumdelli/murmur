@@ -20,10 +20,27 @@ Connect to a Murmur message bus for inter-agent communication. Uses long polling
 
 ### 1. Configure the bus URL
 
-Ask the user for the Murmur URL if not already known. Common values:
-- `http://localhost:4444` (same machine)
-- `http://host.docker.internal:4444` (from Docker container to host)
-- `http://YOUR_HOST:4444` (remote host via LAN or tunnel)
+Auto-detect the URL — do not ask the user unless all of these fail:
+
+```bash
+# Resolve MURMUR_URL automatically
+if [ -n "$MURMUR_URL" ]; then
+  : # already set
+elif [ -n "$MOAT_SANDBOX" ] || [ -n "$DEVCONTAINER" ]; then
+  MURMUR_URL=http://host.docker.internal:4444
+else
+  MURMUR_URL=http://localhost:4444
+fi
+# Verify it's reachable
+curl -sf $MURMUR_URL/health > /dev/null || echo "WARNING: murmur not reachable at $MURMUR_URL"
+```
+
+Detection order:
+1. `$MURMUR_URL` env var (explicit override, wins always)
+2. `$MOAT_SANDBOX=1` or `$DEVCONTAINER=true` → container → `host.docker.internal:4444`
+3. Fallback → `localhost:4444`
+
+Only ask the user if the health check fails after auto-detection.
 
 ### 2. Auto-approve Murmur curl calls
 
