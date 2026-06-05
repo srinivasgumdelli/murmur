@@ -31,6 +31,8 @@ func Agents(pool *pgxpool.Pool) http.HandlerFunc {
 		case strings.HasSuffix(path, "/heartbeat") && r.Method == http.MethodPost:
 			agentName := strings.TrimSuffix(path, "/heartbeat")
 			heartbeat(pool, w, r, agentName)
+		case path != "" && !strings.Contains(path, "/") && r.Method == http.MethodDelete:
+			deleteAgent(pool, w, r, path)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}
@@ -107,6 +109,44 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(agents)
+}
+
+func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name string) {
+	tx, err := pool.Begin(r.Context())
+	if err != nil {
+		log.Printf("begin tx: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if _, err := tx.Exec(r.Context(), `DELETE FROM api_keys WHERE agent = $1`, name); err != nil {
+		log.Printf("delete api_keys for agent %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	var a model.Agent
+	err = tx.QueryRow(r.Context(),
+		`DELETE FROM agents WHERE name = $1
+		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
+		name,
+	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	if err != nil {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("commit delete agent %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	postSystemMessage(r.Context(), pool, a.Name+" left")
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(a)
 }
 
 type heartbeatResponse struct {
