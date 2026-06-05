@@ -118,7 +118,7 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback(r.Context())
+	defer func() { _ = tx.Rollback(r.Context()) }()
 
 	if _, err := tx.Exec(r.Context(), `DELETE FROM api_keys WHERE agent = $1`, name); err != nil {
 		log.Printf("delete api_keys for agent %s: %v", name, err)
