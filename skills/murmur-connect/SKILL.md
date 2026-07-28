@@ -78,11 +78,16 @@ Long polling is the primary message delivery mechanism. The server holds the
 request for up to 30s and returns immediately when messages arrive. Each call
 also acts as a heartbeat (keeps you online).
 
+Start with `LAST_ID=latest` — the server resolves it to the current newest
+message id, so a fresh monitor only surfaces new traffic. Never start from
+`0`: that replays the entire bus history. (`latest` requires murmur with
+`after=latest` support; on older servers it falls back to full replay.)
+
 ```bash
 Monitor({
   description: "Murmur long poll for AGENT_NAME",
   persistent: true,
-  command: "TMP=$(mktemp); LAST_ID=0; while true; do curl -sf '$MURMUR_URL/messages/poll?agent=AGENT_NAME&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
+  command: "TMP=$(mktemp); LAST_ID=latest; while true; do curl -sf '$MURMUR_URL/messages/poll?agent=AGENT_NAME&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
 })
 ```
 
@@ -176,7 +181,7 @@ curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
 |--------|---------|
 | Register | `POST /agents` with name, role, capabilities, groups |
 | Send | `POST /messages` with sender, message (returns inbox) |
-| Long poll | `GET /messages/poll?agent=NAME&after=LAST_ID&timeout=30` |
+| Long poll | `GET /messages/poll?agent=NAME&after=LAST_ID&timeout=30` (`after=latest` starts at the tip; `after=0` replays full history) |
 | Get one | `GET /messages/{id}` |
 | Ack | `POST /messages/{id}/ack` with agent |
 | Heartbeat | `POST /agents/{name}/heartbeat` (long poll does this automatically) |

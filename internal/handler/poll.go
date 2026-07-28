@@ -8,16 +8,25 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/srinivasgumdelli/murmur/internal/model"
 )
+
+// DB is the subset of pgxpool.Pool the poll handler uses, so tests can
+// substitute a mock.
+type DB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 type pollResponse struct {
 	Messages []model.Message `json:"messages"`
 	LastID   int             `json:"last_id"`
 }
 
-func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
+func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		agent := r.URL.Query().Get("agent")
 		if agent == "" {
@@ -25,7 +34,11 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 			return
 		}
 
-		after, _ := strconv.Atoi(r.URL.Query().Get("after"))
+		after, tail, err := parseAfter(r.URL.Query().Get("after"))
+		if err != nil {
+			http.Error(w, "after must be a message id or 'latest'", http.StatusBadRequest)
+			return
+		}
 		timeoutSec, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
 		if timeoutSec <= 0 || timeoutSec > 60 {
 			timeoutSec = 30
@@ -34,6 +47,15 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 		// Update agent heartbeat
 		_, _ = pool.Exec(r.Context(),
 			`UPDATE agents SET status = 'online', last_seen = now() WHERE name = $1`, agent)
+
+		if tail {
+			if err := pool.QueryRow(r.Context(),
+				`SELECT COALESCE(MAX(id), 0) FROM messages`).Scan(&after); err != nil {
+				log.Printf("poll tip query: %v", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+		}
 
 		// Check for existing messages first
 		msgs, lastID := fetchPollMessages(r.Context(), pool, agent, after)
@@ -64,7 +86,18 @@ func Poll(pool *pgxpool.Pool, notifier *Notifier) http.HandlerFunc {
 	}
 }
 
-func fetchPollMessages(ctx context.Context, pool *pgxpool.Pool, agent string, after int) ([]model.Message, int) {
+// parseAfter resolves the `after` query param. Absent or "latest" means start
+// from the current newest message; a number is an explicit cursor (0 replays
+// full history).
+func parseAfter(v string) (after int, tail bool, err error) {
+	if v == "" || v == "latest" {
+		return 0, true, nil
+	}
+	after, err = strconv.Atoi(v)
+	return after, false, err
+}
+
+func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([]model.Message, int) {
 	rows, err := pool.Query(ctx,
 		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
 		 FROM messages
@@ -94,7 +127,7 @@ func fetchPollMessages(ctx context.Context, pool *pgxpool.Pool, agent string, af
 	defer rows.Close()
 
 	var msgs []model.Message
-	var lastID int
+	lastID := after
 	var ids []int
 	for rows.Next() {
 		var m model.Message

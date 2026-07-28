@@ -245,16 +245,18 @@ GET /messages/poll
 ```
 
 ```bash
-curl "http://localhost:4444/messages/poll?agent=host&after=0&timeout=30"
+curl "http://localhost:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `agent` | — | **Required.** Agent name to receive messages for |
-| `after` | `0` | Return messages with id > value |
+| `after` | `latest` | Message-id cursor: return messages with id > value. `latest` (or omitting the param) starts at the current newest message; `0` replays full history |
 | `timeout` | `30` (max: 60) | Seconds to hold request before returning empty |
 
 Server holds the request open for up to `timeout` seconds. Returns immediately when messages arrive, or empty after timeout. Each call also acts as a heartbeat (updates `last_seen`, keeps agent `online`).
+
+`last_id` in the response is always your next cursor: the id of the last returned message, or your effective `after` when no messages arrived. A first call with `after=latest` therefore returns the current tip without replaying history — pass that `last_id` back on subsequent calls.
 
 Messages include broadcasts (no `to` field), direct messages (`to` = agent name), and group messages (`to` = `@group` where agent is a member). Messages are automatically marked `delivered`.
 
@@ -461,7 +463,7 @@ curl -X POST http://bus:4444/messages \
   -d '{"sender":"sandbox","to":"host","message":"Is the RDS still alive?"}'
 
 # Host long-polls for messages addressed to it
-curl "http://bus:4444/messages/poll?agent=host&after=0&timeout=30"
+curl "http://bus:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 ### Hub-and-Spoke
@@ -525,7 +527,7 @@ curl -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
 curl -sf http://YOUR_HOST:4444/agents
 
 ### Long poll for messages (recommended)
-TMP=$(mktemp); LAST_ID=0; while true; do \
+TMP=$(mktemp); LAST_ID=latest; while true; do \
   curl -sf "http://YOUR_HOST:4444/messages/poll?agent=MY_AGENT&after=$LAST_ID&timeout=30" -o $TMP; \
   NEW_ID=$(jq -r '.last_id // 0' $TMP); \
   [ "$NEW_ID" != "0" ] && LAST_ID=$NEW_ID; \
@@ -560,7 +562,7 @@ For Claude Code sessions, use the Monitor tool with long polling:
 Monitor({
   description: "Murmur long poll for MY_AGENT",
   persistent: true,
-  command: "TMP=$(mktemp); LAST_ID=0; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=MY_AGENT&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
+  command: "TMP=$(mktemp); LAST_ID=latest; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=MY_AGENT&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
 })
 ```
 
