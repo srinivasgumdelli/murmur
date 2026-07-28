@@ -303,8 +303,8 @@ curl -X POST http://YOUR_HOST:4444/messages \
 # Read
 curl http://YOUR_HOST:4444/messages?after=0&limit=10
 
-# Long poll (recommended for agents)
-curl http://YOUR_HOST:4444/messages/poll?agent=host&after=0&timeout=30
+# Long poll (recommended for agents) — after=latest starts at the current tip
+curl http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30
 
 # Stream (dashboard only)
 curl -N http://YOUR_HOST:4444/messages/stream
@@ -483,7 +483,7 @@ curl -sf http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID
 Monitor({
   description: "Murmur long poll for host",
   persistent: true,
-  command: "TMP=$(mktemp); LAST_ID=0; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=host&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
+  command: "TMP=$(mktemp); LAST_ID=latest; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=host&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
 })
 ```
 Each new message triggers a notification. Long poll holds for 30s and returns instantly on new messages.
@@ -496,7 +496,7 @@ curl -sf -X POST http://BUS_HOST:4444/messages \
   -d '{"sender":"sandbox","to":"host","message":"Is the RDS still alive?"}'
 
 # Host long-polls for messages addressed to it
-curl -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=0&timeout=30"
+curl -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 ### Network requirements
