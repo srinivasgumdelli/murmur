@@ -134,11 +134,11 @@ func put(ctx context.Context, tx pgx.Tx, m memory.Memory, scopeCap int, actor me
 			m.Supersedes = &previous.ID
 		}
 	}
-	if scopeCap > 0 && !replacesCurrent {
+	if scopeCap > 0 && !replacesCurrent && m.Kind != memory.KindNone {
 		var current int
 		err := tx.QueryRow(ctx, `
 			SELECT count(*) FROM memories
-			WHERE scope=$1 AND superseded_at IS NULL
+			WHERE scope=$1 AND kind<>'none' AND superseded_at IS NULL
 			AND (expires_at IS NULL OR expires_at > $2)`, m.Scope, m.CreatedAt).Scan(&current)
 		if err != nil {
 			return memory.Memory{}, false, err
