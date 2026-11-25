@@ -48,13 +48,14 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		ctx := t.Context()
 		store := newStore(t)
 		claim := put(t, store, entry("task:deploy", "cmd.deploy", "deploy production", now), 1)
-		promoted, err := store.Promote(ctx, claim.ID, "lead", now.Add(time.Second), 1)
-		if err != nil || promoted.Scope != memory.SharedScope || promoted.OriginScope != claim.Scope || promoted.Author != claim.Author ||
+		promoted, created, err := store.Promote(ctx, claim.ID, "lead", now.Add(time.Second), 1)
+		if err != nil || !created || promoted.OriginID == nil || *promoted.OriginID != claim.ID ||
+			promoted.Scope != memory.SharedScope || promoted.OriginScope != claim.Scope || promoted.Author != claim.Author ||
 			promoted.Provenance != memory.Promoted || promoted.PromotedBy != "lead" || promoted.ExpiresAt != nil {
 			t.Fatalf("promotion = %+v, err = %v", promoted, err)
 		}
-		next, err := store.Promote(ctx, claim.ID, "lead", now.Add(2*time.Second), 1)
-		if err != nil || next.Supersedes == nil || *next.Supersedes != promoted.ID {
+		next, created, err := store.Promote(ctx, claim.ID, "lead", now.Add(2*time.Second), 1)
+		if err != nil || !created || next.Supersedes == nil || *next.Supersedes != promoted.ID {
 			t.Fatalf("replacement promotion = %+v, err = %v", next, err)
 		}
 		if _, err := store.Expire(ctx, next.ID, memory.Actor{Agent: "worker"}, now); !errors.Is(err, memory.ErrForbidden) {
@@ -66,8 +67,8 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		}
 
 		other := put(t, store, entry("workspace:web", claim.Key, "deploy web", now), 1)
-		alsoPromoted, err := store.Promote(ctx, other.ID, "lead", now.Add(3*time.Second), 2)
-		if err != nil || alsoPromoted.Key != claim.Key || alsoPromoted.OriginScope != other.Scope || alsoPromoted.Supersedes != nil {
+		alsoPromoted, created, err := store.Promote(ctx, other.ID, "lead", now.Add(3*time.Second), 2)
+		if err != nil || !created || alsoPromoted.Key != claim.Key || alsoPromoted.OriginScope != other.Scope || alsoPromoted.Supersedes != nil {
 			t.Fatalf("promotion from another scope = %+v, err = %v", alsoPromoted, err)
 		}
 		find(t, store, memory.Query{Scopes: []string{memory.SharedScope}}, now.Add(4*time.Second), 2)
@@ -83,6 +84,37 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 				t.Errorf("superseded promotion survived reap: %+v", item)
 			}
 		}
+	})
+
+	t.Run("unkeyed promotion is idempotent", func(t *testing.T) {
+		ctx := t.Context()
+		store := newStore(t)
+		claim := put(t, store, entry("workspace:app", "", "first note", now), 2)
+		first, created, err := store.Promote(ctx, claim.ID, "lead", now, 1)
+		if err != nil || !created || first.OriginID == nil || *first.OriginID != claim.ID {
+			t.Fatalf("first promotion = %+v, created = %v, err = %v", first, created, err)
+		}
+		// Origin expiry should not create a second copy or change the result of a retry.
+		if _, err := store.Expire(ctx, claim.ID, memory.Actor{Agent: claim.Author}, now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		retry, created, err := store.Promote(ctx, claim.ID, "lead", now.Add(2*time.Second), 1)
+		if err != nil || created || retry.ID != first.ID {
+			t.Fatalf("repeated promotion = %+v, created = %v, err = %v", retry, created, err)
+		}
+		other := put(t, store, entry(claim.Scope, "", "second note", now), 2)
+		if _, _, err := store.Promote(ctx, other.ID, "lead", now.Add(2*time.Second), 1); !errors.Is(err, memory.ErrScopeFull) {
+			t.Fatalf("different note promotion: got %v, want scope full", err)
+		}
+		find(t, store, memory.Query{Scopes: []string{memory.SharedScope}, IncludeHistory: true}, now.Add(2*time.Second), 1)
+	})
+
+	t.Run("natural-language search", func(t *testing.T) {
+		store := newStore(t)
+		put(t, store, entry("workspace:app", "", "Run tests with make test.", now), 2)
+		find(t, store, memory.Query{Text: "How do I run the tests?"}, now, 1)
+		find(t, store, memory.Query{Text: "How do I run the integration tests?"}, now, 0)
+		find(t, store, memory.Query{Text: "How do I?"}, now, 0)
 	})
 
 	t.Run("filters and retention", func(t *testing.T) {
@@ -180,19 +212,33 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		store := newStore(t)
 		capture := entry("workspace:app", "cmd.test", "go test", now)
 		capture.Kind, capture.Source = memory.KindCommand, memory.SourceCapture
+		const ttl = 90 * 24 * time.Hour
+		firstExpiry := now.Add(ttl)
+		capture.ExpiresAt = &firstExpiry
 		first := put(t, store, capture, 3)
 		manual := entry(capture.Scope, "", "make test", now)
 		manual.Kind, manual.SessionID = memory.KindCommand, "session"
 		put(t, store, manual, 3)
 		capture.CreatedAt = now.Add(time.Second)
+		retryExpiry := capture.CreatedAt.Add(ttl)
+		capture.ExpiresAt = &retryExpiry
 		capture.SessionID = manual.SessionID
 		duplicate, created, err := store.Put(t.Context(), capture, 3, memory.Actor{Agent: capture.Author})
 		if err != nil || created || duplicate.ID != first.ID || duplicate.Source != memory.SourceCapture {
 			t.Fatalf("duplicate capture = %+v, created = %v, err = %v", duplicate, created, err)
 		}
+		capture.CreatedAt = now.Add(24 * time.Hour)
+		renewedExpiry := capture.CreatedAt.Add(ttl)
+		capture.ExpiresAt = &renewedExpiry
+		renewed := put(t, store, capture, 3)
+		if renewed.ID == first.ID || renewed.Supersedes == nil || *renewed.Supersedes != first.ID ||
+			renewed.ExpiresAt == nil || !renewed.ExpiresAt.Equal(renewedExpiry) {
+			t.Fatalf("renewed capture = %+v, want newer revision and fresh expiry", renewed)
+		}
+		find(t, store, memory.Query{Source: memory.SourceCapture}, firstExpiry, 1)
 		capture.Body = "go test ./..."
 		put(t, store, capture, 3)
-		find(t, store, memory.Query{Source: memory.SourceCapture, IncludeHistory: true}, capture.CreatedAt, 2)
+		find(t, store, memory.Query{Source: memory.SourceCapture, IncludeHistory: true}, capture.CreatedAt, 3)
 		find(t, store, memory.Query{Source: memory.SourceManual, SessionID: manual.SessionID}, capture.CreatedAt, 1)
 	})
 

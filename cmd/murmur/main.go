@@ -121,9 +121,8 @@ func run() error {
 	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))
 	mux.HandleFunc("/", ui.Handler())
 
-	var srv http.Handler = mux
+	srv := handler.AuthMiddleware(pool, authMode, adminKey, mux)
 	if authMode != "" && authMode != "off" {
-		srv = handler.AuthMiddleware(pool, authMode, adminKey, mux)
 		log.Printf("auth mode: %s", authMode)
 	}
 

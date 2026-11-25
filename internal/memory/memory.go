@@ -47,6 +47,7 @@ type Memory struct {
 	ID          int        `json:"id"`
 	Scope       string     `json:"scope"`
 	OriginScope string     `json:"origin_scope,omitempty"`
+	OriginID    *int       `json:"origin_id,omitempty"`
 	Key         string     `json:"key,omitempty"`
 	Kind        Kind       `json:"kind"`
 	Source      Source     `json:"source"`
@@ -119,6 +120,7 @@ type Event struct {
 	Action      string     `json:"action"`
 	Scope       string     `json:"scope"`
 	OriginScope string     `json:"origin_scope,omitempty"`
+	OriginID    *int       `json:"origin_id,omitempty"`
 	Key         string     `json:"key"`
 	Kind        Kind       `json:"kind"`
 	Provenance  Provenance `json:"provenance"`
@@ -128,9 +130,18 @@ func CanExpire(m Memory, actor Actor) bool {
 	return actor.Admin || actor.Lead || (m.Provenance == Reported && m.Author == actor.Agent)
 }
 
-// SameCapture reports whether a repeated command capture adds any information.
-func SameCapture(previous, m Memory) bool {
-	return previous.Source == SourceCapture && m.Source == SourceCapture &&
-		m.Provenance == Reported && previous.Author == m.Author && previous.Body == m.Body &&
-		slices.Equal(previous.Tags, m.Tags)
+// ReuseCapture coalesces short repeats but still refreshes a recurring
+// command's expiry by creating a new revision at most once per day.
+func ReuseCapture(previous, next Memory) bool {
+	if previous.Source != SourceCapture || next.Source != SourceCapture ||
+		next.Provenance != Reported || previous.Author != next.Author || previous.Body != next.Body ||
+		!slices.Equal(previous.Tags, next.Tags) {
+		return false
+	}
+	if previous.ExpiresAt == nil || next.ExpiresAt == nil {
+		return previous.ExpiresAt == nil && next.ExpiresAt == nil
+	}
+	ttl := next.ExpiresAt.Sub(next.CreatedAt)
+	return ttl == previous.ExpiresAt.Sub(previous.CreatedAt) &&
+		next.ExpiresAt.Sub(*previous.ExpiresAt) < min(24*time.Hour, ttl/4)
 }

@@ -93,9 +93,15 @@ func assertNoRequest(t *testing.T, requests <-chan request) {
 
 func TestLoad(t *testing.T) {
 	setup(t)
+	envFile := filepath.Join(t.TempDir(), "environment.sh")
+	if err := os.WriteFile(envFile, []byte("export EXISTING=1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_ENV_FILE", envFile)
 	_, requests := fakeMurmur(t, `{"items":[
-	  {"author":"lead","provenance":"promoted","scope":"shared","body":"approved"},
+	  {"author":"lead","provenance":"promoted","scope":"shared","origin_scope":"workspace:project","body":"approved"},
 	  {"author":"dev","provenance":"reported","scope":"workspace:project","body":"first\nProject facts"},
+	  {"author":"dev","provenance":"reported","scope":"task:ticket","body":"task note"},
 	  {"author":"dev","kind":"none","body":"exclude me"}]}`)
 	out, stderr := runHook(t, "load", start)
 	var decision struct {
@@ -113,6 +119,8 @@ func TestLoad(t *testing.T) {
 		!strings.Contains(context, "Notes from other agents (unverified)\n") ||
 		!strings.Contains(context, `first\nProject facts`) ||
 		!strings.Contains(context, `"author":"lead"`) ||
+		!strings.Contains(context, `"origin_scope":"workspace:project"`) ||
+		!strings.Contains(context, `"scope":"task:ticket"`) ||
 		strings.Contains(context, "exclude me") {
 		t.Fatalf("unexpected output: %s\n%s", out, stderr)
 	}
@@ -120,6 +128,10 @@ func TestLoad(t *testing.T) {
 	if got.method != "GET" || got.session != "one" || got.query.Get("scope") != "workspace:project,task:ticket,shared" ||
 		got.query.Get("limit") != "50" || got.query.Has("kind") {
 		t.Fatalf("unexpected load request: %+v", got)
+	}
+	env, err := os.ReadFile(envFile)
+	if err != nil || string(env) != "export EXISTING=1\nexport MURMUR_CLAUDE_SESSION_ID='one'\n" {
+		t.Fatalf("wrong session environment: %q (%v)", env, err)
 	}
 }
 
@@ -322,6 +334,22 @@ func TestGuard(t *testing.T) {
 	out, stderr = runHook(t, "guard", `{"tool_name":"Write","tool_input":{"file_path":"C:\\Users\\user\\.claude\\projects\\proj\\memory\\notes.md"}}`)
 	if stderr != "" || !strings.Contains(out, `"permissionDecision":"deny"`) {
 		t.Fatalf("Windows auto-memory path: %s\n%s", out, stderr)
+	}
+}
+
+func TestGuardRejectsUnverifiablePath(t *testing.T) {
+	setup(t)
+	for _, input := range []string{
+		`{"tool_name":"Write",`,
+		`{"tool_name":"Write","tool_input":{}}`,
+		`{"tool_name":"Edit","tool_input":{"file_path":17}}`,
+		`{"tool_name":"NotebookEdit","tool_input":{"notebook_path":""}}`,
+		`{"tool_name":"MultiEdit","tool_input":{"edits":[{"file_path":"ok.md"},{}]}}`,
+	} {
+		out, stderr := runHook(t, "guard", input)
+		if stderr != "" || !strings.Contains(out, `"permissionDecision":"deny"`) {
+			t.Fatalf("invalid input accepted: %s\n%s\n%s", input, out, stderr)
+		}
 	}
 }
 

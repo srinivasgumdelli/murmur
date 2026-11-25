@@ -102,29 +102,34 @@ func validTags(tags []string) bool {
 }
 
 func (s *Service) Put(ctx context.Context, actor Actor, req PutRequest) (Memory, error) {
+	m, _, err := s.PutWithResult(ctx, actor, req)
+	return m, err
+}
+
+func (s *Service) PutWithResult(ctx context.Context, actor Actor, req PutRequest) (Memory, bool, error) {
 	if err := s.authorize(actor); err != nil {
-		return Memory{}, err
+		return Memory{}, false, err
 	}
 	if !validScope(req.Scope) {
-		return Memory{}, invalid("scope must be workspace:<id> or task:<id>")
+		return Memory{}, false, invalid("scope must be workspace:<id> or task:<id>")
 	}
 	if req.Scope == SharedScope {
-		return Memory{}, ErrForbidden
+		return Memory{}, false, ErrForbidden
 	}
 	if req.Key != "" && !validIdentifier.MatchString(req.Key) {
-		return Memory{}, invalid("invalid key")
+		return Memory{}, false, invalid("invalid key")
 	}
 	if req.Kind == "" {
 		req.Kind = KindNote
 	}
 	if !validKind(req.Kind) {
-		return Memory{}, invalid("unsupported kind")
+		return Memory{}, false, invalid("unsupported kind")
 	}
 	if len(req.Body) > maxBody {
-		return Memory{}, ErrBodyTooLarge
+		return Memory{}, false, ErrBodyTooLarge
 	}
 	if !validText(req.Body, maxBody) || (req.Kind != KindNone && strings.TrimSpace(req.Body) == "") {
-		return Memory{}, invalid("body must be valid nonempty text up to 4096 bytes")
+		return Memory{}, false, invalid("body must be valid nonempty text up to 4096 bytes")
 	}
 	if req.Source == "" {
 		req.Source = SourceManual
@@ -133,22 +138,22 @@ func (s *Service) Put(ctx context.Context, actor Actor, req PutRequest) (Memory,
 	case SourceManual:
 	case SourceCapture:
 		if req.Kind != KindCommand || req.Key == "" {
-			return Memory{}, invalid("capture source requires a keyed command")
+			return Memory{}, false, invalid("capture source requires a keyed command")
 		}
 	default:
-		return Memory{}, invalid("unsupported source")
+		return Memory{}, false, invalid("unsupported source")
 	}
 	if req.Kind == KindNone && req.Key != "" {
-		return Memory{}, invalid("none entries cannot have a key")
+		return Memory{}, false, invalid("none entries cannot have a key")
 	}
 	if !validText(req.SessionID, 128) || !validTags(req.Tags) {
-		return Memory{}, invalid("invalid session_id or tags")
+		return Memory{}, false, invalid("invalid session_id or tags")
 	}
 	ttl := s.cfg.TTLDays
 	if req.TTLDays != nil {
 		ttl = *req.TTLDays
 		if ttl < 1 || ttl > maxTTL {
-			return Memory{}, invalid("ttl_days must be between 1 and 36500")
+			return Memory{}, false, invalid("ttl_days must be between 1 and 36500")
 		}
 	}
 	now := s.cfg.Now().UTC()
@@ -162,7 +167,7 @@ func (s *Service) Put(ctx context.Context, actor Actor, req PutRequest) (Memory,
 	if err == nil && created {
 		s.publish("put", stored)
 	}
-	return stored, err
+	return stored, created, err
 }
 
 func (s *Service) Search(ctx context.Context, actor Actor, q Query) (Result, error) {
@@ -221,20 +226,25 @@ func (s *Service) Get(ctx context.Context, actor Actor, id int, history bool) ([
 }
 
 func (s *Service) Promote(ctx context.Context, actor Actor, id int) (Memory, error) {
+	m, _, err := s.PromoteWithResult(ctx, actor, id)
+	return m, err
+}
+
+func (s *Service) PromoteWithResult(ctx context.Context, actor Actor, id int) (Memory, bool, error) {
 	if err := s.authorize(actor); err != nil {
-		return Memory{}, err
+		return Memory{}, false, err
 	}
 	if !actor.Admin && !actor.Lead {
-		return Memory{}, ErrForbidden
+		return Memory{}, false, ErrForbidden
 	}
 	if !validID(id) {
-		return Memory{}, invalid("invalid id")
+		return Memory{}, false, invalid("invalid id")
 	}
-	m, err := s.store.Promote(ctx, id, actor.Name(), s.cfg.Now().UTC(), s.cfg.ScopeCap)
-	if err == nil {
+	m, created, err := s.store.Promote(ctx, id, actor.Name(), s.cfg.Now().UTC(), s.cfg.ScopeCap)
+	if err == nil && created {
 		s.publish("promote", m)
 	}
-	return m, err
+	return m, created, err
 }
 
 func (s *Service) Expire(ctx context.Context, actor Actor, id int) error {
@@ -287,7 +297,7 @@ func (s *Service) Reap(ctx context.Context, retention time.Duration) error {
 
 func (s *Service) publish(action string, m Memory) {
 	if s.cfg.Publish != nil {
-		s.cfg.Publish(Event{ID: m.ID, Action: action, Scope: m.Scope, OriginScope: m.OriginScope,
+		s.cfg.Publish(Event{ID: m.ID, Action: action, Scope: m.Scope, OriginScope: m.OriginScope, OriginID: m.OriginID,
 			Key: m.Key, Kind: m.Kind, Provenance: m.Provenance})
 	}
 }

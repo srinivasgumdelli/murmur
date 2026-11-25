@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/srinivasgumdelli/murmur/internal/memory"
 )
@@ -25,6 +27,9 @@ func (s *Store) Search(ctx context.Context, q memory.Query, at time.Time) (memor
 		args = append(args, text)
 		join = " JOIN hits ON hits.memory_id = memories.id"
 		rankOrder = "score ASC, "
+	} else if strings.TrimSpace(q.Text) != "" {
+		// Match Postgres' empty tsquery for punctuation or stop words alone.
+		rowsFilter = append(rowsFilter, "1 = 0")
 	}
 	if !q.IncludeHistory {
 		rowsFilter = append(rowsFilter, current)
@@ -92,14 +97,30 @@ func (s *Store) Search(ctx context.Context, q memory.Query, at time.Time) (memor
 	return out, rows.Err()
 }
 
-// Quote each term so input is interpreted as search text. The SQLite FTS5
-// parser still tokenizes punctuation within the quotes.
+// The SQLite Unicode tokenizer does not discard common English words.
+// Drop stop words used by the Postgres English dictionary before forming a
+// literal AND query. Relevant terms still have to match.
+var englishStopWords = strings.Fields(`
+	a all am an and any are as at be been being both but by can did do does doing don for
+	had has have having he her hers herself him himself his how i if in into is it its
+	itself just me more most my myself no nor not now of on only or other our ours out
+	own s same she should so some such t than that the their theirs them themselves then
+	there these they this those through to too under until up very was we were what when
+	where which while who whom why will with you your yours yourself yourselves
+`)
+
 func ftsQuery(text string) string {
-	words := strings.Fields(text)
-	for i, word := range words {
-		words[i] = `"` + strings.ReplaceAll(word, `"`, `""`) + `"`
+	words := strings.FieldsFunc(text, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.Is(unicode.Co, r)
+	})
+	var terms []string
+	for _, word := range words {
+		if !slices.Contains(englishStopWords, strings.ToLower(word)) {
+			// Quoting also keeps tokens like NEAR literal in the FTS grammar.
+			terms = append(terms, `"`+word+`"`)
+		}
 	}
-	return strings.Join(words, " AND ")
+	return strings.Join(terms, " AND ")
 }
 
 func (s *Store) RecordSearch(ctx context.Context, actor memory.Actor, sessionID string, at time.Time) error {
