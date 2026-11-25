@@ -23,7 +23,7 @@ func TestApplyPreservesPreviousSchemaEntries(t *testing.T) {
 	ctx := t.Context()
 	// Recreate the layout from before the origin and source columns.
 	if _, err := s.pool.Exec(ctx, `
-		ALTER TABLE memories DROP COLUMN origin_scope, DROP COLUMN source;
+		ALTER TABLE memories DROP COLUMN origin_scope, DROP COLUMN origin_id, DROP COLUMN source;
 		INSERT INTO memories (scope, key, body, author) VALUES
 			('workspace:api', 'cmd.test', 'go test ./...', 'worker');
 	`); err != nil {
@@ -33,7 +33,7 @@ func TestApplyPreservesPreviousSchemaEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := s.Search(ctx, memory.Query{Text: "test", Source: memory.SourceManual}, time.Now())
-	if err != nil || got.Total != 1 || got.Items[0].Key != "cmd.test" || got.Items[0].OriginScope != "" {
+	if err != nil || got.Total != 1 || got.Items[0].Key != "cmd.test" || got.Items[0].OriginScope != "" || got.Items[0].OriginID != nil {
 		t.Fatalf("legacy notes = %+v, err = %v", got, err)
 	}
 }

@@ -18,7 +18,7 @@ func (n *Notifier) PublishMemory(event memory.Event) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	for sub := range n.memorySubscribers {
-		if len(sub.scopes) > 0 && !sub.scopes[event.Scope] {
+		if len(sub.scopes) > 0 && !sub.scopes[event.Scope] && !sub.scopes[event.OriginScope] {
 			continue
 		}
 		select {

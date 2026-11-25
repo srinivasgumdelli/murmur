@@ -4,6 +4,10 @@ source "$(dirname -- "$0")/common.sh"
 memory_configured || exit 0
 input=$(cat)
 session=$(memory_session <<< "$input") || exit 0
+if [[ -n ${CLAUDE_ENV_FILE:-} ]]; then
+  # The session ID is restricted by memory_session to shell-safe characters.
+  { printf "export MURMUR_CLAUDE_SESSION_ID='%s'\n" "$session" >> "$CLAUDE_ENV_FILE"; } 2>/dev/null
+fi
 if state=$(memory_state "$session"); then
   memory_prune_state "$state"
 fi
@@ -13,7 +17,9 @@ response=$(memory_request --header "X-Murmur-Session-ID: $session" \
   --data-urlencode limit=50) || exit 0
 
 jq -c '
-  def lines: map("- " + ({"author", "scope", "key", "body"} | @json)) | join("\n");
+  def lines:
+    map("- " + ({"author", "scope", "key", "body"} +
+      (if .origin_scope then {"origin_scope"} else {} end) | @json)) | join("\n");
   .items | arrays | map(select(.kind != "none")) |
   if length == 0 then empty else
     (map(select(.provenance == "promoted")) | lines) as $facts |

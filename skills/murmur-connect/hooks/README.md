@@ -10,12 +10,12 @@ Set `MURMUR_NOTES_PATHS` to a colon-separated list of additional paths to protec
 
 | Event | Behavior |
 |---|---|
-| SessionStart | Fetches workspace, optional task, and shared entries. Labels each record with its author and scope. Promoted entries appear under Project facts and reported entries under Notes from other agents (unverified). |
+| SessionStart | Fetches up to 50 workspace, optional task, and shared entries. The server puts promoted entries first before applying the limit. Promoted entries appear under Project facts with their original scope when available. Reported entries appear under Notes from other agents (unverified). |
 | Stop | On the first successful check in a Claude session, looks for a manual write by this agent with the same session ID, including an explicit `none`. If there is no match, asks once for a useful note or a `none` entry. |
 | PostToolUse | Captures a recognized successful foreground test, build, or lint command as `source: "capture"`. It stores allowlisted arguments and ignores other invocations, environment assignments, command output, and shell chains. |
 | PreToolUse | Protects the project-root `MEMORY.md`, the per-project auto-memory directories under the Claude configuration directory, and configured notes paths. |
 
-Use the `session_id` shown by the Stop hook when saving the requested note or `none` entry. Automatic command captures do not satisfy this check. Resume and compaction keep the same session ID and preserve the first check. The hook stores a private marker in the temporary directory and removes old markers whose transcripts no longer exist. On a server outage, loading and capture quietly skip their work and the Stop hook warns and allows Claude to finish.
+Use `MURMUR_CLAUDE_SESSION_ID` for a manual save from Bash when the hooks are installed. SessionStart exports it via Claude Code's session environment file. Use the exact `session_id` shown by the Stop hook for tool calls or when Bash lacks the variable. Automatic command captures do not satisfy this check. Resume and compaction keep the same session ID and preserve the first check. The hook stores a private marker in the temporary directory and removes old markers whose transcripts no longer exist. On a server outage, loading and capture quietly skip their work and the Stop hook warns and allows Claude to finish.
 
 ## Hook contracts and verification
 

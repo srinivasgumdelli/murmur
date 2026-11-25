@@ -60,7 +60,9 @@ func TestOpenPreservesPreviousSchemaEntries(t *testing.T) {
 	// Recreate the layout from before the origin and source columns.
 	_, err = s.db.ExecContext(ctx, `
 		DROP INDEX idx_memories_origin_key;
+		DROP INDEX idx_memories_unkeyed_origin;
 		ALTER TABLE memories DROP COLUMN origin_scope;
+		ALTER TABLE memories DROP COLUMN origin_id;
 		ALTER TABLE memories DROP COLUMN source;
 		INSERT INTO memories (scope, key, kind, body, author, provenance, created_at) VALUES
 			('workspace:api', 'cmd.test', 'command', 'go test ./...', 'worker', 'reported', 0);
@@ -75,7 +77,7 @@ func TestOpenPreservesPreviousSchemaEntries(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	got, err := s.Search(ctx, memory.Query{Text: "test", Source: memory.SourceManual}, time.Now())
-	if err != nil || got.Total != 1 || got.Items[0].Key != "cmd.test" || got.Items[0].OriginScope != "" {
+	if err != nil || got.Total != 1 || got.Items[0].Key != "cmd.test" || got.Items[0].OriginScope != "" || got.Items[0].OriginID != nil {
 		t.Fatalf("legacy notes = %+v, err = %v", got, err)
 	}
 }
@@ -127,5 +129,51 @@ func TestSearchIndexAfterPurgeAndReopen(t *testing.T) {
 	}
 	if _, err := s.Get(ctx, newer.ID, false); !errors.Is(err, memory.ErrNotFound) {
 		t.Fatalf("get purged revision returned %v", err)
+	}
+}
+
+func TestOpenBackfillsPreviousNotesInFTS(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		createEmptyIndex bool
+	}{
+		{name: "first full-text index"},
+		{name: "already empty full-text index", createEmptyIndex: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			path := filepath.Join(t.TempDir(), "memory.db")
+			s, err := Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Simulate a pre-migration database whose entries predate FTS.
+			_, err = s.db.ExecContext(ctx, `
+				DROP TRIGGER memories_fts_insert;
+				DROP TRIGGER memories_fts_delete;
+				DROP TRIGGER memories_fts_update;
+				DROP TABLE memories_fts;
+				DROP TABLE memory_schema_migrations;
+				INSERT INTO memories(scope, kind, body, author, provenance, created_at)
+				VALUES ('workspace:app', 'note', 'Run the unit tests', 'worker', 'reported', 0);
+			`)
+			if err == nil && tc.createEmptyIndex {
+				_, err = s.db.ExecContext(ctx, `CREATE VIRTUAL TABLE memories_fts USING fts5(
+					body, content='memories', content_rowid='id', tokenize='porter unicode61');`)
+			}
+			closeErr := s.Close()
+			if err != nil || closeErr != nil {
+				t.Fatalf("prepare legacy database: %v, close: %v", err, closeErr)
+			}
+			s, err = Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			got, err := s.Search(ctx, memory.Query{Text: "How do I run the tests?"}, time.Now())
+			if err != nil || got.Total != 1 || got.Items[0].Body != "Run the unit tests" {
+				t.Fatalf("legacy search returned (%+v, %v), want the previously unindexed note", got, err)
+			}
+		})
 	}
 }

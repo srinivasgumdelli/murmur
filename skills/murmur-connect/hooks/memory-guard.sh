@@ -1,7 +1,37 @@
 #!/usr/bin/env bash
 
-command -v jq >/dev/null || exit 0
+if ! command -v jq >/dev/null; then
+  printf '%s\n' 'Install jq so the Murmur hook can check the file path.' >&2
+  exit 2
+fi
 input=$(cat)
+
+deny() {
+  jq -cn --arg reason "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse",
+    permissionDecision: "deny", permissionDecisionReason: $reason}}'
+  exit 0
+}
+
+request=$(jq -ce --arg project "${CLAUDE_PROJECT_DIR:-/}" '
+  def valid_path: type == "string" and length > 0 and (contains("\u0000") | not);
+  def paths:
+    if .tool_name == "NotebookEdit" then [.tool_input.notebook_path]
+    elif .tool_name == "MultiEdit" then
+      if .tool_input.file_path != null then
+        [.tool_input.file_path, (.tool_input.edits[]? | .file_path | select(. != null))]
+      else
+        [.tool_input.edits[]? | .file_path]
+      end
+    else [.tool_input.file_path] end;
+
+  if type != "object" or (.tool_name | type) != "string" then error("missing tool name")
+  elif .tool_name | IN("Write", "Edit", "NotebookEdit", "MultiEdit") then
+    {cwd: (.cwd // $project), paths: paths} |
+    select((.cwd | valid_path) and (.paths | length > 0 and all(.[]; valid_path)))
+  else {paths: []} end
+' <<< "$input" 2>/dev/null) ||
+  deny 'The Murmur hook could not verify the file path. Retry with a valid path.'
+[[ $(jq -r '.paths | length' <<< "$request") != 0 ]] || exit 0
 
 canonicalize() {
   jq -nr --arg file "$1" '
@@ -12,15 +42,9 @@ canonicalize() {
   '
 }
 
-cwd=$(jq -er --arg project "${CLAUDE_PROJECT_DIR:-/}" '.cwd // $project | strings' <<< "$input") || exit 0
+cwd=$(jq -r '.cwd' <<< "$request")
 project=${CLAUDE_PROJECT_DIR:-$cwd}
 config=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
-
-deny() {
-  jq -cn '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny",
-    permissionDecisionReason: "Store project knowledge with Murmur POST /memories."}}'
-  exit 0
-}
 
 absolute_path() {
   local path=$1 base=$2
@@ -60,22 +84,19 @@ while IFS= read -r -d '' path; do
 done < <(path_spellings "$config/projects" "$cwd")
 
 shopt -s nocasematch
+reason='Store project knowledge with Murmur POST /memories.'
 while IFS= read -r -d '' file; do
   while IFS= read -r -d '' path; do
     for note in "${protected[@]}"; do
-      [[ $path == "$note" || $path == "$note/"* ]] && deny
+      [[ $path == "$note" || $path == "$note/"* ]] && deny "$reason"
     done
     for root in "${auto_roots[@]}"; do
       [[ $path == "$root/"* ]] || continue
       tail=${path:${#root}+1}
       [[ $tail == */* ]] || continue
       relative=${tail#*/}
-      [[ $relative == memory || $relative == memory/* ]] && deny
+      [[ $relative == memory || $relative == memory/* ]] && deny "$reason"
     done
   done < <(path_spellings "$file" "$cwd")
-done < <(jq -j '
-  select(.tool_name == "Write" or .tool_name == "Edit" or .tool_name == "NotebookEdit" or .tool_name == "MultiEdit") |
-  .tool_input | .file_path, .notebook_path, (.edits[]? | .file_path) |
-  strings | select(length > 0 and (contains("\u0000") | not)) | ., "\u0000"
-' <<< "$input" 2>/dev/null)
+done < <(jq -j '.paths[] | ., "\u0000"' <<< "$request")
 exit 0
