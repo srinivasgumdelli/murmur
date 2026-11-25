@@ -26,7 +26,7 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		if err != nil || len(chain) != 2 || chain[0].ID != next.ID || chain[1].ID != first.ID {
 			t.Fatalf("history = %+v, err = %v", chain, err)
 		}
-		if _, err := store.Put(ctx, entry(next.Scope, "another", "another note", now), 1); !errors.Is(err, memory.ErrScopeFull) {
+		if _, _, err := store.Put(ctx, entry(next.Scope, "another", "another note", now), 1, memory.Actor{Agent: "worker"}); !errors.Is(err, memory.ErrScopeFull) {
 			t.Fatalf("over-cap write: %v", err)
 		}
 		actor := memory.Actor{Agent: "worker"}
@@ -35,8 +35,8 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		}
 		find(t, store, memory.Query{}, now.Add(3*time.Second), 0)
 		find(t, store, memory.Query{IncludeHistory: true}, now.Add(3*time.Second), 2)
-		if err := store.Purge(ctx, next.ID); err != nil {
-			t.Fatal(err)
+		if deleted, err := store.Purge(ctx, next.ID); err != nil || deleted.ID != next.ID || deleted.Scope != next.Scope {
+			t.Fatalf("purged revision = %+v, err = %v", deleted, err)
 		}
 		if _, err := store.Get(ctx, next.ID, false); !errors.Is(err, memory.ErrNotFound) {
 			t.Fatalf("purged entry: %v", err)
@@ -49,7 +49,7 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		store := newStore(t)
 		claim := put(t, store, entry("task:deploy", "cmd.deploy", "deploy production", now), 1)
 		promoted, err := store.Promote(ctx, claim.ID, "lead", now.Add(time.Second), 1)
-		if err != nil || promoted.Scope != memory.SharedScope || promoted.Author != claim.Author ||
+		if err != nil || promoted.Scope != memory.SharedScope || promoted.OriginScope != claim.Scope || promoted.Author != claim.Author ||
 			promoted.Provenance != memory.Promoted || promoted.PromotedBy != "lead" || promoted.ExpiresAt != nil {
 			t.Fatalf("promotion = %+v, err = %v", promoted, err)
 		}
@@ -64,6 +64,25 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		if len(found.Items) != 1 || found.Items[0].ID != next.ID {
 			t.Fatalf("ranking or limit = %+v", found)
 		}
+
+		other := put(t, store, entry("workspace:web", claim.Key, "deploy web", now), 1)
+		alsoPromoted, err := store.Promote(ctx, other.ID, "lead", now.Add(3*time.Second), 2)
+		if err != nil || alsoPromoted.Key != claim.Key || alsoPromoted.OriginScope != other.Scope || alsoPromoted.Supersedes != nil {
+			t.Fatalf("promotion from another scope = %+v, err = %v", alsoPromoted, err)
+		}
+		find(t, store, memory.Query{Scopes: []string{memory.SharedScope}}, now.Add(4*time.Second), 2)
+		find(t, store, memory.Query{Scopes: []string{memory.SharedScope}, IncludeHistory: true}, now.Add(4*time.Second), 3)
+
+		retention := 30 * 24 * time.Hour
+		if err := store.Reap(ctx, now.Add(2*time.Second).Add(retention), retention); err != nil {
+			t.Fatal(err)
+		}
+		history := find(t, store, memory.Query{Scopes: []string{memory.SharedScope}, IncludeHistory: true}, now.Add(4*time.Second), 2)
+		for _, item := range history.Items {
+			if item.ID == promoted.ID || item.Supersedes != nil {
+				t.Errorf("superseded promotion survived reap: %+v", item)
+			}
+		}
 	})
 
 	t.Run("filters and retention", func(t *testing.T) {
@@ -75,12 +94,15 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		note.SessionID = "test-session"
 		expires := now.Add(time.Hour)
 		note.ExpiresAt = &expires
-		saved := put(t, store, note, 1)
+		saved := put(t, store, note, 2)
 		none := entry(note.Scope, "", "", now.Add(time.Second))
 		none.Kind = memory.KindNone
-		put(t, store, none, 1)
+		put(t, store, none, 2)
+		if _, _, err := store.Put(ctx, none, 2, memory.Actor{Agent: none.Author}); !errors.Is(err, memory.ErrScopeFull) {
+			t.Fatalf("over-cap marker: %v", err)
+		}
 
-		find(t, store, memory.Query{}, now.Add(time.Minute), 1)
+		find(t, store, memory.Query{Limit: 1}, now.Add(time.Minute), 1)
 		find(t, store, memory.Query{Kind: memory.KindAny}, now.Add(time.Minute), 2)
 		find(t, store, memory.Query{Text: "compile", Scopes: []string{"workspace:app", "task:other"},
 			Tags: []string{"go", "build"}, Author: "worker", SessionID: "test-session", Kind: memory.KindCommand,
@@ -94,11 +116,11 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 			t.Fatal(err)
 		}
 		stats, err := store.Stats(ctx, now.Add(time.Minute))
-		if err != nil || stats.CountsPerScope[note.Scope] != 1 || stats.WritesPerAgent["worker"] != 2 ||
+		if err != nil || stats.CountsPerScope[note.Scope] != 2 || stats.WritesPerAgent["worker"] != 2 ||
 			stats.NoneShare != 0.5 || stats.SearchesPerAgent["worker"] != 1 || stats.SearchesPerSession["test-session"] != 1 {
 			t.Fatalf("stats = %+v, err = %v", stats, err)
 		}
-		if err := store.Reap(ctx, expires); err != nil {
+		if err := store.Reap(ctx, expires, 0); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := store.Get(ctx, saved.ID, false); !errors.Is(err, memory.ErrNotFound) {
@@ -109,13 +131,102 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		}
 	})
 
+	t.Run("key ownership", func(t *testing.T) {
+		store := newStore(t)
+		ctx := t.Context()
+		owner := entry("workspace:app", "cmd.test", "run owner's tests", now)
+		other := owner
+		other.Author, other.Body = "other", "run other tests"
+		type write struct {
+			item memory.Memory
+			err  error
+		}
+		results := make(chan write, 2)
+		for _, note := range []memory.Memory{owner, other} {
+			go func() {
+				item, _, err := store.Put(ctx, note, 1, memory.Actor{Agent: note.Author})
+				results <- write{item, err}
+			}()
+		}
+		var winner memory.Memory
+		var denied int
+		for range 2 {
+			r := <-results
+			switch {
+			case r.err == nil:
+				winner = r.item
+			case errors.Is(r.err, memory.ErrForbidden):
+				denied++
+			default:
+				t.Error(r.err)
+			}
+		}
+		if denied != 1 || winner.ID == 0 {
+			t.Fatalf("concurrent writers: winner = %+v, denied = %d", winner, denied)
+		}
+		find(t, store, memory.Query{IncludeHistory: true}, now, 1)
+		for i, actor := range []memory.Actor{{Agent: "lead", Lead: true}, {Admin: true}} {
+			takeover := entry(owner.Scope, owner.Key, "replace as privileged agent", now.Add(time.Duration(i+1)*time.Second))
+			takeover.Author = actor.Name()
+			replacement, created, err := store.Put(ctx, takeover, 1, actor)
+			if err != nil || !created || replacement.Supersedes == nil || *replacement.Supersedes != winner.ID {
+				t.Fatalf("privileged replacement = %+v, created = %v, err = %v", replacement, created, err)
+			}
+			winner = replacement
+		}
+	})
+
+	t.Run("repeated captured command", func(t *testing.T) {
+		store := newStore(t)
+		capture := entry("workspace:app", "cmd.test", "go test", now)
+		capture.Kind, capture.Source = memory.KindCommand, memory.SourceCapture
+		first := put(t, store, capture, 3)
+		manual := entry(capture.Scope, "", "make test", now)
+		manual.Kind, manual.SessionID = memory.KindCommand, "session"
+		put(t, store, manual, 3)
+		capture.CreatedAt = now.Add(time.Second)
+		capture.SessionID = manual.SessionID
+		duplicate, created, err := store.Put(t.Context(), capture, 3, memory.Actor{Agent: capture.Author})
+		if err != nil || created || duplicate.ID != first.ID || duplicate.Source != memory.SourceCapture {
+			t.Fatalf("duplicate capture = %+v, created = %v, err = %v", duplicate, created, err)
+		}
+		capture.Body = "go test ./..."
+		put(t, store, capture, 3)
+		find(t, store, memory.Query{Source: memory.SourceCapture, IncludeHistory: true}, capture.CreatedAt, 2)
+		find(t, store, memory.Query{Source: memory.SourceManual, SessionID: manual.SessionID}, capture.CreatedAt, 1)
+	})
+
+	t.Run("search metric retention follows reaper time", func(t *testing.T) {
+		store := newStore(t)
+		at := time.Date(2000, time.January, 1, 12, 0, 0, 0, time.UTC)
+		actor := memory.Actor{Agent: "worker"}
+		if err := store.RecordSearch(t.Context(), actor, "session", at); err != nil {
+			t.Fatal(err)
+		}
+		for _, test := range []struct {
+			reapAt time.Time
+			want   int
+		}{
+			{at.Add(memory.StatsWindow), 1},
+			{at.Add(memory.StatsWindow + 24*time.Hour), 0},
+		} {
+			if err := store.Reap(t.Context(), test.reapAt, 0); err != nil {
+				t.Fatal(err)
+			}
+			stats, err := store.Stats(t.Context(), at)
+			if err != nil || stats.SearchesPerSession["session"] != test.want {
+				t.Fatalf("stats = %+v, err = %v, want %d searches", stats, err, test.want)
+			}
+		}
+	})
+
 	t.Run("concurrent keyed writes", func(t *testing.T) {
 		store := newStore(t)
 		const writes = 10
 		results := make(chan error, writes)
 		for range writes {
 			go func() {
-				_, err := store.Put(t.Context(), entry("workspace:app", "cmd.test", "run tests", now), 1)
+				_, _, err := store.Put(t.Context(), entry("workspace:app", "cmd.test", "run tests", now), 1, memory.Actor{Agent: "worker"})
 				results <- err
 			}()
 		}
@@ -134,7 +245,7 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		results := make(chan error, writes)
 		for range writes {
 			go func() {
-				_, err := store.Put(t.Context(), entry("workspace:app", "", "run tests", now), 2)
+				_, _, err := store.Put(t.Context(), entry("workspace:app", "", "run tests", now), 2, memory.Actor{Agent: "worker"})
 				results <- err
 			}()
 		}
@@ -156,14 +267,17 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 
 func entry(scope, key, body string, at time.Time) memory.Memory {
 	return memory.Memory{Scope: scope, Key: key, Body: body, Author: "worker",
-		Kind: memory.KindNote, Provenance: memory.Reported, CreatedAt: at}
+		Kind: memory.KindNote, Source: memory.SourceManual, Provenance: memory.Reported, CreatedAt: at}
 }
 
 func put(t *testing.T, store memory.Store, m memory.Memory, cap int) memory.Memory {
 	t.Helper()
-	stored, err := store.Put(t.Context(), m, cap)
+	stored, created, err := store.Put(t.Context(), m, cap, memory.Actor{Agent: m.Author})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("put returned an existing entry")
 	}
 	return stored
 }

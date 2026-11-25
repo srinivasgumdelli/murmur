@@ -7,9 +7,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const start = `{"session_id":"one","hook_event_name":"SessionStart","source":"startup"}`
@@ -114,7 +118,7 @@ func TestLoad(t *testing.T) {
 	}
 	got := takeRequest(t, requests)
 	if got.method != "GET" || got.session != "one" || got.query.Get("scope") != "workspace:project,task:ticket,shared" ||
-		got.query.Get("limit") != "50" {
+		got.query.Get("limit") != "50" || got.query.Has("kind") {
 		t.Fatalf("unexpected load request: %+v", got)
 	}
 }
@@ -146,12 +150,75 @@ func TestGate(t *testing.T) {
 			}
 			got := takeRequest(t, requests)
 			if got.method != "GET" || got.session != "one" || got.query.Get("author") != "me" ||
-				got.query.Get("since") == "" || got.query.Get("scope") != "workspace:project,task:ticket" ||
+				got.query.Has("since") || got.query.Get("session_id") != "one" || got.query.Get("source") != "manual" ||
+				got.query.Get("scope") != "workspace:project,task:ticket" ||
 				got.query.Get("kind") != "any" || got.query.Get("include_history") != "true" ||
 				got.query.Get("limit") != "1" {
 				t.Fatalf("unexpected gate request: %+v", got)
 			}
 		})
+	}
+}
+
+func TestStopPromptsOnlyOnceAcrossTurnsAndResume(t *testing.T) {
+	setup(t)
+	_, requests := fakeMurmur(t, `{"items":[],"total":0}`)
+	out, stderr := runHook(t, "gate", stop)
+	if stderr != "" || !strings.Contains(out, `"decision":"block"`) ||
+		!strings.Contains(out, "POST /memories") || strings.Contains(out, "memory_put") {
+		t.Fatalf("unexpected first Stop: %s\n%s", out, stderr)
+	}
+	takeRequest(t, requests)
+	for _, source := range []string{"resume", "compact"} {
+		runHook(t, "load", strings.Replace(start, "startup", source, 1))
+		takeRequest(t, requests)
+		if out, stderr := runHook(t, "gate", stop); out != "" || stderr != "" {
+			t.Fatalf("Stop after %s: %s\n%s", source, out, stderr)
+		}
+		assertNoRequest(t, requests)
+	}
+	if out, _ := runHook(t, "gate", strings.Replace(stop, "one", "two", 1)); !strings.Contains(out, `"decision":"block"`) {
+		t.Fatalf("another session should prompt: %s", out)
+	}
+	if got := takeRequest(t, requests); got.query.Get("session_id") != "two" {
+		t.Fatalf("wrong session: %+v", got)
+	}
+}
+
+func TestLoadPrunesMarkersForMissingTranscripts(t *testing.T) {
+	setup(t)
+	_, requests := fakeMurmur(t, `{"items":[]}`)
+	stateDir := filepath.Join(os.Getenv("TMPDIR"), "murmur-memory-"+strconv.Itoa(os.Getuid()))
+	if err := os.Mkdir(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	transcript := filepath.Join(t.TempDir(), "live.jsonl")
+	if err := os.WriteFile(transcript, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(stateDir, "old.reviewed")
+	live := filepath.Join(stateDir, "live.reviewed")
+	pending := filepath.Join(stateDir, "recent.reviewed")
+	old := time.Now().Add(-72 * time.Hour)
+	for file, contents := range map[string]string{live: transcript, stale: transcript + ".missing", pending: ""} {
+		if err := os.WriteFile(file, []byte(contents+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if file != pending {
+			if err := os.Chtimes(file, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	runHook(t, "load", start)
+	takeRequest(t, requests)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("orphaned marker remains: %v", err)
+	}
+	for _, file := range []string{live, pending} {
+		if _, err := os.Stat(file); err != nil {
+			t.Errorf("retained marker is missing: %v", err)
+		}
 	}
 }
 
@@ -188,7 +255,7 @@ func TestCapture(t *testing.T) {
 		}
 		if got.method != "POST" || payload["key"] != tc.key || payload["body"] != tc.command ||
 			payload["scope"] != "workspace:project" || payload["kind"] != "command" ||
-			payload["session_id"] != "one" {
+			payload["session_id"] != "one" || payload["source"] != "capture" {
 			t.Fatalf("unexpected capture request: %+v", got)
 		}
 	}
@@ -214,23 +281,30 @@ func TestCapture(t *testing.T) {
 
 func TestGuard(t *testing.T) {
 	setup(t)
-	t.Setenv("CLAUDE_PROJECT_DIR", t.TempDir())
+	project := t.TempDir()
+	config := t.TempDir()
+	t.Setenv("CLAUDE_PROJECT_DIR", project)
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
 	t.Setenv("MURMUR_NOTES_PATHS", "docs/agent-notes:TEAM_NOTES.md")
 	for _, tc := range []struct {
-		tool, path string
-		deny       bool
+		tool, field, path, cwd string
+		deny                   bool
 	}{
-		{"Write", "MEMORY.md", true},
-		{"Edit", "src/../MEMORY.md", true},
-		{"Write", "/home/agent/.claude/projects/proj/memory/notes.md", true},
-		{"Write", `C:\Users\user\.claude\projects\proj\memory\notes.md`, true},
-		{"Edit", "docs/agent-notes/my-note.md", true},
-		{"Write", "TEAM_NOTES.md", true},
-		{"Edit", "docs/agent-notes-sample/my-note.md", false},
-		{"Write", "src/app.go", false},
-		{"Read", "MEMORY.md", false},
+		{"Write", "file_path", "MEMORY.md", project, true},
+		{"Edit", "file_path", "../MEMORY.md", filepath.Join(project, "docs"), true},
+		{"Edit", "file_path", "memory.md", filepath.Join(project, "docs"), false},
+		{"Write", "file_path", filepath.Join(config, "projects/proj/memory/notes.md"), project, true},
+		{"Write", "file_path", filepath.Join(config, "projects/proj/reference/memory/notes.md"), project, false},
+		{"Write", "file_path", "docs/.claude/projects/proj/memory/notes.md", project, false},
+		{"Edit", "file_path", "docs/agent-notes/my-note.md", project, true},
+		{"Write", "file_path", "TEAM_NOTES.md", project, true},
+		{"NotebookEdit", "notebook_path", "docs/agent-notes/notes.ipynb", project, true},
+		{"MultiEdit", "file_path", "MEMORY.md", project, true},
+		{"Edit", "file_path", "docs/agent-notes-sample/my-note.md", project, false},
+		{"Write", "file_path", "src/app.go", project, false},
+		{"Read", "file_path", "MEMORY.md", project, false},
 	} {
-		data, err := json.Marshal(map[string]any{"tool_name": tc.tool, "tool_input": map[string]string{"file_path": tc.path}})
+		data, err := json.Marshal(map[string]any{"tool_name": tc.tool, "cwd": tc.cwd, "tool_input": map[string]string{tc.field: tc.path}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -239,6 +313,15 @@ func TestGuard(t *testing.T) {
 			(!tc.deny && out != "") {
 			t.Fatalf("%s %s: unexpected output: %s\n%s", tc.tool, tc.path, out, stderr)
 		}
+	}
+	out, stderr := runHook(t, "guard", `{"tool_name":"MultiEdit","tool_input":{"edits":[{"file_path":"a.txt"},{"file_path":"MEMORY.md"}]}}`)
+	if stderr != "" || !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Fatalf("batch MultiEdit: %s\n%s", out, stderr)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", `C:\Users\user\.claude`)
+	out, stderr = runHook(t, "guard", `{"tool_name":"Write","tool_input":{"file_path":"C:\\Users\\user\\.claude\\projects\\proj\\memory\\notes.md"}}`)
+	if stderr != "" || !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Fatalf("Windows auto-memory path: %s\n%s", out, stderr)
 	}
 }
 

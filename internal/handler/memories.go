@@ -40,8 +40,11 @@ func InstallMemoryRoutes(mux *http.ServeMux, svc *memory.Service, authMode strin
 	register("POST /memories", func(w http.ResponseWriter, r *http.Request) error {
 		var req memory.PutRequest
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-		if err := decoder.Decode(&req); err != nil || decoder.Decode(new(any)) != io.EOF {
-			return memory.ErrInvalid
+		if err := decoder.Decode(&req); err != nil {
+			return memoryDecodeError(err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return memoryDecodeError(err)
 		}
 		entry, err := svc.Put(r.Context(), memoryActor(r), req)
 		return memoryJSON(w, http.StatusCreated, entry, err)
@@ -118,6 +121,7 @@ func parseMemoryQuery(values url.Values) (q memory.Query, err error) {
 	q.Text = values.Get("q")
 	q.Author = values.Get("author")
 	q.Kind = memory.Kind(values.Get("kind"))
+	q.Source = memory.Source(values.Get("source"))
 	q.SessionID = values.Get("session_id")
 	q.IncludeHistory, err = queryBool(values, "include_history")
 	if err != nil {
@@ -176,9 +180,19 @@ func memoryJSON(w http.ResponseWriter, status int, body any, err error) error {
 	return nil
 }
 
+func memoryDecodeError(err error) error {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return memory.ErrBodyTooLarge
+	}
+	return memory.ErrInvalid
+}
+
 func memoryError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
+	case errors.Is(err, memory.ErrBodyTooLarge):
+		status = http.StatusRequestEntityTooLarge
 	case errors.Is(err, memory.ErrInvalid):
 		status = http.StatusBadRequest
 	case errors.Is(err, memory.ErrAuthRequired):

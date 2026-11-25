@@ -44,11 +44,16 @@ func (s *Store) Search(ctx context.Context, q memory.Query, at time.Time) (memor
 	}
 	switch q.Kind {
 	case "":
-		rowsFilter = append(rowsFilter, "kind != 'none'")
+		rowsFilter = append(rowsFilter, "kind != ?")
+		args = append(args, memory.KindNone)
 	case memory.KindAny:
 	default:
 		rowsFilter = append(rowsFilter, "kind = ?")
 		args = append(args, q.Kind)
+	}
+	if q.Source != "" {
+		rowsFilter = append(rowsFilter, "source = ?")
+		args = append(args, q.Source)
 	}
 	if q.Author != "" {
 		rowsFilter = append(rowsFilter, "author = ?")
@@ -70,8 +75,8 @@ func (s *Store) Search(ctx context.Context, q memory.Query, at time.Time) (memor
 		q.Limit = 20
 	}
 	query := preamble + "SELECT " + columns + ", COUNT(*) OVER() FROM memories" + join + where +
-		" ORDER BY " + rankOrder + "(provenance = 'promoted') DESC, created_at DESC, id DESC LIMIT ?"
-	rows, err := s.db.QueryContext(ctx, query, append(args, q.Limit)...)
+		" ORDER BY " + rankOrder + "(provenance = ?) DESC, created_at DESC, id DESC LIMIT ?"
+	rows, err := s.db.QueryContext(ctx, query, append(args, memory.Promoted, q.Limit)...)
 	if err != nil {
 		return memory.Result{}, err
 	}
@@ -114,7 +119,7 @@ func (s *Store) Stats(ctx context.Context, at time.Time) (memory.Stats, error) {
 	defer func() { _ = tx.Rollback() }()
 	since := at.Add(-memory.StatsWindow)
 	out.CountsPerScope, err = counts(ctx, tx,
-		"SELECT scope, COUNT(*) FROM memories WHERE kind != 'none' AND "+current+" GROUP BY scope", at.UnixMicro())
+		"SELECT scope, COUNT(*) FROM memories WHERE "+current+" GROUP BY scope", at.UnixMicro())
 	if err != nil {
 		return memory.Stats{}, err
 	}
@@ -134,8 +139,8 @@ func (s *Store) Stats(ctx context.Context, at time.Time) (memory.Stats, error) {
 		return memory.Stats{}, err
 	}
 	err = tx.QueryRowContext(ctx, `
-		SELECT COALESCE(avg(kind = 'none'), 0)
-		FROM memories WHERE created_at >= ?`, since.UnixMicro()).Scan(&out.NoneShare)
+		SELECT COALESCE(avg(kind = ?), 0)
+		FROM memories WHERE created_at >= ?`, memory.KindNone, since.UnixMicro()).Scan(&out.NoneShare)
 	if err != nil {
 		return memory.Stats{}, err
 	}

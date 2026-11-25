@@ -32,5 +32,5 @@ fi
 
 payload=$(jq -cn --arg scope "workspace:$MURMUR_WORKSPACE" --arg key "$key" \
   --arg body "$command_line" --arg sid "$session" \
-  '{scope: $scope, key: $key, kind: "command", body: $body, session_id: $sid}') || exit 0
+  '{scope: $scope, key: $key, kind: "command", body: $body, session_id: $sid, source: "capture"}') || exit 0
 memory_request --header 'Content-Type: application/json' --data-binary "$payload" >/dev/null || true
