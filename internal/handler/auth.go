@@ -7,6 +7,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -44,8 +45,7 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 			http.Error(w, "key management disabled (MURMUR_ADMIN_KEY not set)", http.StatusNotFound)
 			return
 		}
-		provided := r.Header.Get("X-Murmur-Key")
-		if !matchesAdminKey(provided, adminKey) {
+		if !matchesAdminKey(requestKey(r), adminKey) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -105,6 +105,18 @@ func AgentFromContext(ctx context.Context) string {
 	return principalFromContext(ctx).agent
 }
 
+// requestKey supports key management even when chat authentication is off.
+func requestKey(r *http.Request) string {
+	if key := r.Header.Get("X-Murmur-Key"); key != "" {
+		return key
+	}
+	scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+	if ok && strings.EqualFold(scheme, "Bearer") {
+		return strings.TrimSpace(token)
+	}
+	return ""
+}
+
 func matchesAdminKey(provided, adminKey string) bool {
 	return adminKey != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(adminKey)) == 1
 }
@@ -129,13 +141,7 @@ func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.
 			return
 		}
 
-		key := r.Header.Get("X-Murmur-Key")
-		if key == "" {
-			scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
-			if ok && strings.EqualFold(scheme, "Bearer") {
-				key = strings.TrimSpace(token)
-			}
-		}
+		key := requestKey(r)
 
 		var p principal
 		switch {
@@ -143,12 +149,16 @@ func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.
 			p.admin = true
 		case key != "":
 			err := pool.QueryRow(r.Context(),
-				`SELECT a.name, a.memory_lead AND a.role = 'lead'
-				 FROM api_keys k JOIN agents a ON a.name = k.agent WHERE k.key_hash = $1`,
+				`SELECT k.agent, COALESCE(a.memory_lead AND a.role = 'lead', false)
+				 FROM api_keys k LEFT JOIN agents a ON a.name = k.agent WHERE k.key_hash = $1`,
 				hashKey(key),
 			).Scan(&p.agent, &p.lead)
-			if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
 				p = principal{}
+			} else if err != nil {
+				log.Printf("auth: look up key: %v", err)
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
 			}
 		}
 

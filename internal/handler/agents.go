@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/model"
 )
@@ -65,11 +67,16 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
 		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
 		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text,
-		 role = CASE WHEN agents.memory_lead AND NOT $6 THEN agents.role ELSE $2 END,
+		 role = $2,
 		 memory_lead = CASE WHEN $6 THEN $2 = 'lead' ELSE agents.memory_lead END, description = $3, capabilities = $4, groups = $5, status = 'online', last_seen = now()
+		 WHERE $6 OR NOT agents.memory_lead OR agents.role = $2
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
 		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, admin,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "forbidden: only an admin can change a memory lead's role", http.StatusForbidden)
+		return
+	}
 	if err != nil {
 		log.Printf("upsert agent: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
