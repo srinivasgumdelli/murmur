@@ -261,7 +261,7 @@ Save knowledge using a stable key when revising the same note. If the Stop hook 
 
 ```bash
 jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
-  --arg session_id "${CLAUDE_CODE_SESSION_ID:-}" \
+  --arg session_id "${MURMUR_CLAUDE_SESSION_ID:-}" \
   '{scope: $scope, session_id: $session_id, key: "cmd.test", kind: "command", body: "Run make test."}' |
 curl -fsS "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
   -H 'Content-Type: application/json' --data-binary @-
