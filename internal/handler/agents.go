@@ -49,6 +49,10 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name and role are required", http.StatusBadRequest)
 		return
 	}
+	if !checkAgent(w, r, req.Name) {
+		return
+	}
+	admin := principalFromContext(r.Context()).admin
 	if req.Capabilities == nil {
 		req.Capabilities = []string{}
 	}
@@ -58,11 +62,13 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen)
-		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now())
-		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, description = $3, capabilities = $4, groups = $5, status = 'online', last_seen = now()
+		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
+		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
+		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text,
+		 role = CASE WHEN agents.memory_lead AND NOT $6 THEN agents.role ELSE $2 END,
+		 memory_lead = CASE WHEN $6 THEN $2 = 'lead' ELSE agents.memory_lead END, description = $3, capabilities = $4, groups = $5, status = 'online', last_seen = now()
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Description, req.Capabilities, req.Groups,
+		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, admin,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if err != nil {
 		log.Printf("upsert agent: %v", err)
@@ -112,6 +118,9 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name string) {
+	if !checkAgent(w, r, name) {
+		return
+	}
 	tx, err := pool.Begin(r.Context())
 	if err != nil {
 		log.Printf("begin tx: %v", err)

@@ -425,6 +425,8 @@ Controlled by `MURMUR_AUTH` env var:
 
 `/health` and `/` (dashboard) are always accessible without auth.
 
+Use `required` to prevent sender impersonation. Agent keys can send messages and register or delete records under their own agent name. The admin key can perform these actions for any agent. In `optional` mode, requests with missing or invalid keys can still use the unauthenticated chat API.
+
 ## Channels
 
 Channels scope conversations. No explicit creation required — posting to a channel creates it implicitly.

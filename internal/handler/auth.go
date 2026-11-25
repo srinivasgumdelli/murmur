@@ -1,14 +1,18 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -41,7 +45,7 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 			return
 		}
 		provided := r.Header.Get("X-Murmur-Key")
-		if provided != adminKey {
+		if !matchesAdminKey(provided, adminKey) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -84,51 +88,80 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 	}
 }
 
-func AuthMiddleware(pool *pgxpool.Pool, authMode string, adminKey string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if authMode == "" || authMode == "off" {
-			next.ServeHTTP(w, r)
-			return
-		}
+type principal struct {
+	agent string
+	admin bool
+	lead  bool
+}
 
-		// Skip auth for health and dashboard
-		if r.URL.Path == "/health" || r.URL.Path == "/" {
+type principalKey struct{}
+
+func principalFromContext(ctx context.Context) principal {
+	p, _ := ctx.Value(principalKey{}).(principal)
+	return p
+}
+
+func AgentFromContext(ctx context.Context) string {
+	return principalFromContext(ctx).agent
+}
+
+func matchesAdminKey(provided, adminKey string) bool {
+	return adminKey != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(adminKey)) == 1
+}
+
+func checkAgent(w http.ResponseWriter, r *http.Request, agent string) bool {
+	p := principalFromContext(r.Context())
+	if p.admin || p.agent == "" || p.agent == agent {
+		return true
+	}
+	http.Error(w, "forbidden: key belongs to a different agent", http.StatusForbidden)
+	return false
+}
+
+type keyLookup interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if authMode == "" || authMode == "off" || r.URL.Path == "/health" || r.URL.Path == "/" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		key := r.Header.Get("X-Murmur-Key")
 		if key == "" {
-			if authMode == "optional" {
-				log.Printf("auth: unauthenticated request to %s", r.URL.Path)
-				next.ServeHTTP(w, r)
-				return
+			scheme, token, ok := strings.Cut(r.Header.Get("Authorization"), " ")
+			if ok && strings.EqualFold(scheme, "Bearer") {
+				key = strings.TrimSpace(token)
 			}
-			http.Error(w, "unauthorized: X-Murmur-Key header required", http.StatusUnauthorized)
-			return
 		}
 
-		// Admin key bypasses agent check
-		if key == adminKey {
+		var p principal
+		switch {
+		case matchesAdminKey(key, adminKey):
+			p.admin = true
+		case key != "":
+			err := pool.QueryRow(r.Context(),
+				`SELECT a.name, a.memory_lead AND a.role = 'lead'
+				 FROM api_keys k JOIN agents a ON a.name = k.agent WHERE k.key_hash = $1`,
+				hashKey(key),
+			).Scan(&p.agent, &p.lead)
+			if err != nil {
+				p = principal{}
+			}
+		}
+
+		if p.agent == "" && !p.admin {
+			if authMode != "optional" {
+				http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+				return
+			}
+			log.Printf("auth: unauthenticated request to %s", r.URL.Path)
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		var agent string
-		err := pool.QueryRow(r.Context(),
-			`SELECT agent FROM api_keys WHERE key_hash = $1`,
-			hashKey(key),
-		).Scan(&agent)
-		if err != nil {
-			if authMode == "optional" {
-				log.Printf("auth: invalid key for %s", r.URL.Path)
-				next.ServeHTTP(w, r)
-				return
-			}
-			http.Error(w, "unauthorized: invalid key", http.StatusUnauthorized)
-			return
-		}
-
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, p)))
 	})
 }

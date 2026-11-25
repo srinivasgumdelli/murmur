@@ -67,6 +67,9 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sender and message are required", http.StatusBadRequest)
 		return
 	}
+	if !checkAgent(w, r, req.Sender) {
+		return
+	}
 	if req.Channel == "" {
 		req.Channel = "general"
 	}
