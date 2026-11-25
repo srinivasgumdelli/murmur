@@ -425,7 +425,7 @@ Controlled by `MURMUR_AUTH` env var:
 
 `/health` and `/` (dashboard) are always accessible without auth.
 
-Use `required` to prevent sender impersonation. Agent keys can send messages and register or delete records under their own agent name. The admin key can perform these actions for any agent. In `optional` mode, requests with missing or invalid keys can still use the unauthenticated chat API.
+Use `required` to prevent sender impersonation. Agent keys bind message sends, acknowledgements, registration, deletion, heartbeat, and agent-specific polling and streaming to the key’s agent. Authenticated chat reads include broadcasts, messages sent by or addressed to the agent, and messages routed to its groups. The admin key can act for any agent and is required to change or delete a granted memory lead. In `optional` mode, requests with missing or invalid keys can still use the unauthenticated chat API.
 
 ## Channels
 

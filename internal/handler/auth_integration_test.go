@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/srinivasgumdelli/murmur/internal/model"
 	"github.com/srinivasgumdelli/murmur/internal/schema"
 )
 
@@ -58,18 +60,30 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle("/keys", Keys(pool, admin))
 	mux.Handle("/agents", Agents(pool))
+	mux.Handle("/agents/", Agents(pool))
 	mux.Handle("/messages", Messages(pool))
+	mux.Handle("/messages/", Messages(pool))
+	mux.Handle("/messages/poll", Poll(pool, NewNotifier()))
+	mux.Handle("/messages/stream", Stream(pool))
 	required := AuthMiddleware(pool, "required", admin, mux)
-	request := func(handler http.Handler, path, key, body string, want int) *httptest.ResponseRecorder {
+	optional := AuthMiddleware(pool, "optional", admin, mux)
+	off := AuthMiddleware(pool, "off", admin, mux)
+	do := func(handler http.Handler, method, path, key, body string, want int) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)).WithContext(ctx)
-		req.Header.Set("Authorization", "Bearer "+key)
+		req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != want {
 			t.Fatalf("%s returned %d, want %d: %s", path, rec.Code, want, rec.Body)
 		}
 		return rec
+	}
+	request := func(handler http.Handler, path, key, body string, want int) *httptest.ResponseRecorder {
+		t.Helper()
+		return do(handler, http.MethodPost, path, key, body, want)
 	}
 	issueKey := func(handler http.Handler, name string) string {
 		t.Helper()
@@ -91,5 +105,97 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, "/agents", agentKey, `{"name":"registers-first","role":"lead"}`, http.StatusCreated)
 	request(required, "/agents", agentKey, `{"name":"registers-first","role":"worker"}`, http.StatusForbidden)
 	request(mux, "/agents", "", `{"name":"registers-first","role":"worker"}`, http.StatusForbidden)
-	request(required, "/agents", admin, `{"name":"registers-first","role":"worker"}`, http.StatusCreated)
+	do(required, http.MethodDelete, "/agents/registers-first", agentKey, "", http.StatusForbidden)
+	do(optional, http.MethodDelete, "/agents/registers-first", "", "", http.StatusForbidden)
+	do(off, http.MethodDelete, "/agents/registers-first", "", "", http.StatusForbidden)
+	request(required, "/agents/registers-first/heartbeat", agentKey, "", http.StatusOK)
+	request(off, "/agents", admin, `{"name":"registers-first","role":"worker"}`, http.StatusCreated)
+	request(off, "/agents", admin, `{"name":"registers-first","role":"lead"}`, http.StatusCreated)
+	do(off, http.MethodDelete, "/agents/registers-first", admin, "", http.StatusOK)
+	request(required, "/agents/registers-first/heartbeat", agentKey, "", http.StatusUnauthorized)
+
+	freshKey := issueKey(required, "registers-first")
+	request(required, "/agents", freshKey, `{"name":"registers-first","role":"worker","groups":["team"]}`, http.StatusCreated)
+	outsiderKey := issueKey(required, "others")
+	request(required, "/agents", outsiderKey, `{"name":"others","role":"worker"}`, http.StatusCreated)
+
+	createMessage := func(body string) int {
+		t.Helper()
+		rec := request(required, "/messages", senderKey, body, http.StatusCreated)
+		var result postMessageResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil || result.ID <= 0 {
+			t.Fatalf("invalid message response: %v", err)
+		}
+		return result.ID
+	}
+	directID := createMessage(`{"sender":"sends-first","to":"registers-first","message":"direct"}`)
+	direct := fmt.Sprintf("/messages/%d", directID)
+	do(required, http.MethodGet, direct, outsiderKey, "", http.StatusNotFound)
+	do(required, http.MethodGet, direct, freshKey, "", http.StatusOK)
+	do(required, http.MethodGet, direct, senderKey, "", http.StatusOK)
+	do(required, http.MethodGet, direct, admin, "", http.StatusOK)
+	do(optional, http.MethodGet, direct, "", "", http.StatusOK)
+
+	list := do(required, http.MethodGet, "/messages", outsiderKey, "", http.StatusOK)
+	var history listMessagesResponse
+	if err := json.Unmarshal(list.Body.Bytes(), &history); err != nil {
+		t.Fatal(err)
+	}
+	for _, msg := range history.Messages {
+		if msg.ID == directID {
+			t.Fatal("direct message appeared in an unrelated agent's history")
+		}
+	}
+	request(required, direct+"/ack", outsiderKey, `{"agent":"others"}`, http.StatusNotFound)
+	request(required, direct+"/ack", senderKey, `{"agent":"sends-first"}`, http.StatusNotFound)
+
+	senderPollPath := fmt.Sprintf("/messages/poll?agent=sends-first&after=%d", directID-1)
+	senderPoll := do(required, http.MethodGet, senderPollPath, senderKey, "", http.StatusOK)
+	var sent pollResponse
+	if err := json.Unmarshal(senderPoll.Body.Bytes(), &sent); err != nil || len(sent.Messages) == 0 ||
+		sent.Messages[0].ID != directID || sent.Messages[0].Status != "sent" {
+		t.Fatalf("sender poll should see its outgoing message without marking it delivered: %v", err)
+	}
+	pollPath := fmt.Sprintf("/messages/poll?agent=registers-first&after=%d", directID-1)
+	poll := do(required, http.MethodGet, pollPath, freshKey, "", http.StatusOK)
+	var inbox pollResponse
+	if err := json.Unmarshal(poll.Body.Bytes(), &inbox); err != nil || len(inbox.Messages) == 0 || inbox.Messages[0].ID != directID {
+		t.Fatalf("direct message missing from recipient poll: %v", err)
+	}
+	request(required, direct+"/ack", freshKey, `{"agent":"registers-first"}`, http.StatusOK)
+	groupID := createMessage(`{"sender":"sends-first","to":"@team","message":"group"}`)
+	group := fmt.Sprintf("/messages/%d", groupID)
+	do(required, http.MethodGet, group, outsiderKey, "", http.StatusNotFound)
+	request(required, group+"/ack", freshKey, `{"agent":"registers-first"}`, http.StatusOK)
+	request(required, group+"/ack", admin, `{"agent":"operator"}`, http.StatusOK)
+
+	// Omitting ?agent must still filter the stream by its authenticated key.
+	server := httptest.NewServer(required)
+	defer server.Close()
+	stream, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/messages/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream.Header.Set("Authorization", "Bearer "+outsiderKey)
+	response, err := server.Client().Do(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status %d", response.StatusCode)
+	}
+	createMessage(`{"sender":"sends-first","to":"registers-first","message":"hidden from stream"}`)
+	broadcast := createMessage(`{"sender":"sends-first","message":"broadcast"}`)
+	reader := bufio.NewReader(response.Body)
+	event, err := reader.ReadString('\n')
+	if err != nil || event != "event: message\n" {
+		t.Fatalf("stream event %q: %v", event, err)
+	}
+	data, err := reader.ReadString('\n')
+	value, ok := strings.CutPrefix(data, "data: ")
+	var received model.Message
+	if err != nil || !ok || json.Unmarshal([]byte(value), &received) != nil || received.ID != broadcast {
+		t.Fatalf("stream should skip the unrelated direct message, got %q: %v", data, err)
+	}
 }

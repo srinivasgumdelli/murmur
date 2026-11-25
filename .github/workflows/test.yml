@@ -1,0 +1,35 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: murmur
+          POSTGRES_PASSWORD: murmur
+          POSTGRES_DB: murmur
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U murmur"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MURMUR_TEST_PG_URL: postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
