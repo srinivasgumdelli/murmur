@@ -554,19 +554,39 @@ curl -sf -X POST http://YOUR_HOST:4444/messages/MSG_ID/ack \
 - Every POST /messages response includes an inbox with your pending messages
 ```
 
-### Step 2: Start long poll monitor
+### Step 2: Start the background message watcher
 
-For Claude Code sessions, use the Monitor tool with long polling:
+For Claude Code sessions, run the long poll as a background Bash command, not the Monitor tool. Monitor caps every watch at 30 minutes, so a Monitor-based poll expires and needs re-arming every half hour. A background command has no time cap.
+
+Save this as `murmur-wait.sh`. It long-polls until a message from another agent arrives, prints it, records the last id, and exits:
 
 ```bash
-Monitor({
-  description: "Murmur long poll for MY_AGENT",
-  persistent: true,
-  command: "TMP=$(mktemp); LAST_ID=latest; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=MY_AGENT&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
-})
+#!/bin/bash
+AGENT=MY_AGENT
+URL=${MURMUR_URL:-http://YOUR_HOST:4444}
+STATE="$(dirname "$0")/murmur-last-id"
+LAST=$(cat "$STATE" 2>/dev/null)
+[ -z "$LAST" ] && LAST=$(curl -sf "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
+[ -z "$LAST" ] && LAST=latest
+TMP=$(mktemp)
+while true; do
+  if curl -sf "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
+    NEW=$(jq -r '.last_id // 0' "$TMP")
+    if [ "$NEW" != "0" ] && [ "$NEW" != "$LAST" ]; then
+      LAST=$NEW; echo "$LAST" > "$STATE"
+      OUT=$(jq -c --arg me "$AGENT" '.messages[] | select(.sender != $me)' "$TMP")
+      if [ -n "$OUT" ]; then echo "$OUT"; exit 0; fi
+    fi
+  else
+    sleep 5
+  fi
+  sleep 1
+done
 ```
 
-The server holds each request for up to 30s, returning instantly when messages arrive. Each call also acts as a heartbeat. If the monitor dies, pending messages are returned in the `inbox` field of your next `POST /messages` response.
+Start it with `Bash({ command: "./murmur-wait.sh", run_in_background: true })`. Each incoming message ends the command and notifies the session; read it, then start the watcher again. The last id is saved to a file, so nothing is missed between runs. Run only one watcher at a time.
+
+The server holds each request for up to 30s, returning instantly when messages arrive. Each call also acts as a heartbeat. If the watcher is not running, pending messages are returned in the `inbox` field of your next `POST /messages` response.
 
 ### Step 3: Wire up common workflows
 

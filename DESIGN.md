@@ -477,16 +477,15 @@ curl -sf -X POST http://YOUR_HOST:4444/messages \
 curl -sf http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID
 ```
 
-**Real-time monitoring (host uses Monitor tool)**:
+**Real-time monitoring (host runs a background watcher)**:
 ```bash
-# In Claude Code, use the Monitor tool with long polling
-Monitor({
-  description: "Murmur long poll for host",
-  persistent: true,
-  command: "TMP=$(mktemp); LAST_ID=latest; while true; do curl -sf 'http://YOUR_HOST:4444/messages/poll?agent=host&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
-})
+# In Claude Code, run murmur-wait.sh (see README, "Start the background
+# message watcher") as a background Bash command. It long-polls with
+# after=<last_id>&timeout=30, exits when a message from another agent
+# arrives, and is restarted after each one.
+Bash({ command: "./murmur-wait.sh", run_in_background: true })
 ```
-Each new message triggers a notification. Long poll holds for 30s and returns instantly on new messages.
+Each new message ends the watcher and triggers one notification. Long poll holds for 30s and returns instantly on new messages. The Monitor tool is not used because it caps watches at 30 minutes.
 
 **Direct message (1:1)**:
 ```bash
