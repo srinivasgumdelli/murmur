@@ -12,6 +12,7 @@ import (
 	"github.com/srinivasgumdelli/murmur/internal/handler"
 	"github.com/srinivasgumdelli/murmur/internal/memory"
 	"github.com/srinivasgumdelli/murmur/internal/memory/pgstore"
+	"github.com/srinivasgumdelli/murmur/internal/memory/sqlitestore"
 	"github.com/srinivasgumdelli/murmur/internal/schema"
 	"github.com/srinivasgumdelli/murmur/internal/ui"
 )
@@ -58,9 +59,23 @@ func main() {
 	notifier := handler.NewNotifier()
 	notifier.Listen(ctx, pool)
 
-	memoryStore := pgstore.New(pool)
-	if err := memoryStore.Apply(ctx); err != nil {
-		log.Fatalf("apply memory schema: %v", err)
+	var memoryStore memory.Store
+	switch backend := getenv("MURMUR_MEMORY_STORE", "postgres"); backend {
+	case "postgres":
+		store := pgstore.New(pool)
+		if err := store.Apply(ctx); err != nil {
+			log.Fatalf("apply Postgres memory schema: %v", err)
+		}
+		memoryStore = store
+	case "sqlite":
+		store, err := sqlitestore.Open(ctx, getenv("MURMUR_MEMORY_DB", "./murmur-memory.db"))
+		if err != nil {
+			log.Fatalf("open SQLite memory store: %v", err)
+		}
+		defer store.Close()
+		memoryStore = store
+	default:
+		log.Fatalf("unsupported MURMUR_MEMORY_STORE %q", backend)
 	}
 	memoryService := memory.NewService(memoryStore, memory.Config{
 		AuthMode: authMode,
