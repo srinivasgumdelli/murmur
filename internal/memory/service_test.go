@@ -72,6 +72,20 @@ func TestServicePut(t *testing.T) {
 	}
 }
 
+func TestServiceNoneMarkersExpireSoon(t *testing.T) {
+	now := time.Date(2026, time.November, 26, 12, 0, 0, 0, time.UTC)
+	store := fakeStore{put: func(m Memory, _ int, _ Actor) (Memory, bool, error) {
+		if m.ExpiresAt == nil || !m.ExpiresAt.Equal(now.AddDate(0, 0, noneTTL)) {
+			t.Fatalf("none expiry = %v, want %d days", m.ExpiresAt, noneTTL)
+		}
+		return m, true, nil
+	}}
+	service := NewService(store, Config{AuthMode: "required", Now: func() time.Time { return now }})
+	if _, err := service.Put(t.Context(), Actor{Agent: "worker"}, PutRequest{Scope: "workspace:api", Kind: KindNone}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestServicePutValidation(t *testing.T) {
 	actor := Actor{Agent: "worker"}
 	ctx := t.Context()

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -101,8 +102,22 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, "/messages", senderKey, `{"sender":"sends-first","message":"hello"}`, http.StatusCreated)
 	request(required, "/keys", senderKey, `{"agent":"sends-first"}`, http.StatusUnauthorized)
 
-	request(required, "/agents", admin, `{"name":"registers-first","role":"lead"}`, http.StatusCreated)
-	request(required, "/agents", agentKey, `{"name":"registers-first","role":"lead"}`, http.StatusCreated)
+	grant := request(required, "/agents", admin, `{"name":"registers-first","role":"lead","groups":["trusted"],"description":"admin assigned","capabilities":["review"]}`, http.StatusCreated)
+	rejoin := request(required, "/agents", agentKey, `{"name":"registers-first","role":"lead","groups":["other"],"description":"changed","capabilities":["deploy"]}`, http.StatusCreated)
+	var original, current model.Agent
+	if err := json.Unmarshal(grant.Body.Bytes(), &original); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(rejoin.Body.Bytes(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.SessionID != original.SessionID || !slices.Equal(current.Groups, original.Groups) ||
+		!slices.Equal(current.Capabilities, original.Capabilities) || current.Description == nil ||
+		*current.Description != "admin assigned" {
+		t.Fatalf("non-admin rejoin altered protected lead fields: %+v", current)
+	}
+	request(optional, "/agents", "", `{"name":"registers-first","role":"lead","groups":["other"]}`, http.StatusForbidden)
+	request(off, "/agents", "", `{"name":"registers-first","role":"lead","groups":["other"]}`, http.StatusForbidden)
 	request(required, "/agents", agentKey, `{"name":"registers-first","role":"worker"}`, http.StatusForbidden)
 	request(mux, "/agents", "", `{"name":"registers-first","role":"worker"}`, http.StatusForbidden)
 	do(required, http.MethodDelete, "/agents/registers-first", agentKey, "", http.StatusForbidden)
@@ -150,16 +165,26 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, direct+"/ack", senderKey, `{"agent":"sends-first"}`, http.StatusNotFound)
 
 	senderPollPath := fmt.Sprintf("/messages/poll?agent=sends-first&after=%d", directID-1)
-	senderPoll := do(required, http.MethodGet, senderPollPath, senderKey, "", http.StatusOK)
-	var sent pollResponse
-	if err := json.Unmarshal(senderPoll.Body.Bytes(), &sent); err != nil || len(sent.Messages) == 0 ||
-		sent.Messages[0].ID != directID || sent.Messages[0].Status != "sent" {
-		t.Fatalf("sender poll should see its outgoing message without marking it delivered: %v", err)
+	for _, tc := range []struct {
+		mode    string
+		handler http.Handler
+		key     string
+	}{
+		{"off", off, ""},
+		{"optional", optional, ""},
+		{"required", required, senderKey},
+	} {
+		senderPoll := do(tc.handler, http.MethodGet, senderPollPath, tc.key, "", http.StatusOK)
+		var sent pollResponse
+		if err := json.Unmarshal(senderPoll.Body.Bytes(), &sent); err != nil || len(sent.Messages) == 0 ||
+			sent.Messages[0].ID != directID || sent.Messages[0].Status != "sent" {
+			t.Fatalf("%s sender poll should leave outgoing status sent: %s (%v)", tc.mode, senderPoll.Body, err)
+		}
 	}
 	pollPath := fmt.Sprintf("/messages/poll?agent=registers-first&after=%d", directID-1)
 	poll := do(required, http.MethodGet, pollPath, freshKey, "", http.StatusOK)
 	var inbox pollResponse
-	if err := json.Unmarshal(poll.Body.Bytes(), &inbox); err != nil || len(inbox.Messages) == 0 || inbox.Messages[0].ID != directID {
+	if err := json.Unmarshal(poll.Body.Bytes(), &inbox); err != nil || len(inbox.Messages) == 0 || inbox.Messages[0].ID != directID || inbox.Messages[0].Status != "delivered" {
 		t.Fatalf("direct message missing from recipient poll: %v", err)
 	}
 	request(required, direct+"/ack", freshKey, `{"agent":"registers-first"}`, http.StatusOK)
