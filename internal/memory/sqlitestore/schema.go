@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scope TEXT NOT NULL,
     origin_scope TEXT NOT NULL DEFAULT '',
+    origin_id INTEGER,
     key TEXT,
     kind TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'manual',
@@ -36,6 +37,7 @@ CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF body ON memorie
     INSERT INTO memories_fts(memories_fts, rowid, body) VALUES ('delete', old.id, old.body);
     INSERT INTO memories_fts(rowid, body) VALUES (new.id, new.body);
 END;
+CREATE TABLE IF NOT EXISTS memory_schema_migrations (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS memory_searches (
     author TEXT NOT NULL,
     session_id TEXT NOT NULL,

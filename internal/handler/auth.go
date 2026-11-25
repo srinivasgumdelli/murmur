@@ -136,12 +136,21 @@ type keyLookup interface {
 
 func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if authMode == "" || authMode == "off" || r.URL.Path == "/health" || r.URL.Path == "/" {
+		if r.URL.Path == "/health" || r.URL.Path == "/" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		key := requestKey(r)
+		if authMode == "" || authMode == "off" {
+			// Chat remains open. The configured admin key can still manage
+			// protected roles when the server is running without chat auth.
+			if matchesAdminKey(key, adminKey) {
+				r = r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{admin: true}))
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
 
 		var p principal
 		switch {

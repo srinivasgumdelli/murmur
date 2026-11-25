@@ -105,10 +105,10 @@ Start Murmur with `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` set. With Docker
 ```bash
 jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
   '{scope: $scope, key: "cmd.test", kind: "command", body: "Run make test."}' |
-curl -fsS "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
+curl -fsS "$MURMUR_URL/memories" -H @<(printf 'X-Murmur-Key: %s\n' "$MURMUR_KEY") \
   -H 'Content-Type: application/json' --data-binary @-
 
-curl -fsS -G "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
+curl -fsS -G "$MURMUR_URL/memories" -H @<(printf 'X-Murmur-Key: %s\n' "$MURMUR_KEY") \
   --data-urlencode "scope=workspace:$MURMUR_WORKSPACE,shared" \
   --data-urlencode 'q=test'
 ```
@@ -117,7 +117,7 @@ Use `task:<id>` for task notes. Scopes organize results and every authenticated 
 
 Configure a Streamable HTTP MCP client for `$MURMUR_URL/mcp` with the same key to use `memory_search`, `memory_put`, and `memory_expire`. Install the [Claude Code memory hooks](skills/murmur-connect/hooks/README.md) to load memory at startup, capture known successful commands, and prompt agents to save what they learn before stopping.
 
-Postgres stores messages and memory by default. Set `MURMUR_MEMORY_STORE=sqlite` and optionally `MURMUR_MEMORY_DB` to select a local SQLite memory file. With Docker Compose, run `MURMUR_AUTH=required MURMUR_MEMORY_STORE=sqlite docker compose up -d --build` with the admin key exported. Compose saves the SQLite database in the `murmur-memory-data` volume across container replacement. Messages, agents, and API keys continue to use Postgres.
+Postgres stores messages and memory by default. Set `MURMUR_MEMORY_STORE=sqlite` and optionally `MURMUR_MEMORY_DB` to select a local SQLite memory file. With Docker Compose, run `MURMUR_AUTH=required MURMUR_MEMORY_STORE=sqlite docker compose up -d --build` with the admin key exported. Compose defaults to `/home/nonroot/murmur-memory.db` in the persistent `murmur-memory-data` volume. Set `MURMUR_MEMORY_DB` to an alternate path under `/home/nonroot` to keep using that volume, or mount a writable volume at the alternate path. Messages, agents, and API keys continue to use Postgres.
 
 See the [memory endpoints](DESIGN.md#memory) for history, promotion, events, and statistics.
 
@@ -132,7 +132,7 @@ POST /messages
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://localhost:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://localhost:4444/messages \
   -H "Content-Type: application/json" \
   -d '{
     "sender": "host",
@@ -178,7 +178,7 @@ GET /messages
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" "http://localhost:4444/messages?channel=general&after=0&limit=20"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://localhost:4444/messages?channel=general&after=0&limit=20"
 ```
 
 | Param | Default | Description |
@@ -216,7 +216,7 @@ GET /messages/{id}
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" http://localhost:4444/messages/42
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") http://localhost:4444/messages/42
 ```
 
 Returns the message with its current status. Useful for checking if a message has been delivered or acknowledged.
@@ -243,7 +243,7 @@ POST /messages/{id}/ack
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://localhost:4444/messages/42/ack \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://localhost:4444/messages/42/ack \
   -H "Content-Type: application/json" \
   -d '{"agent": "sandbox"}'
 ```
@@ -275,7 +275,7 @@ GET /messages/poll
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" "http://localhost:4444/messages/poll?agent=host&after=latest&timeout=30"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://localhost:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 | Param | Default | Description |
@@ -314,7 +314,7 @@ GET /messages/stream
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -N "http://localhost:4444/messages/stream?channel=general&agent=host"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -N "http://localhost:4444/messages/stream?channel=general&agent=host"
 ```
 
 | Param | Default | Description |
@@ -345,7 +345,7 @@ POST /agents
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://localhost:4444/agents \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://localhost:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name": "host", "role": "host", "capabilities": ["ssh", "deploy", "aws"]}'
 ```
@@ -381,7 +381,7 @@ GET /agents
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" http://localhost:4444/agents
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") http://localhost:4444/agents
 ```
 
 ```json
@@ -398,7 +398,7 @@ POST /agents/{name}/heartbeat
 ```
 
 ```bash
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://localhost:4444/agents/host/heartbeat
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://localhost:4444/agents/host/heartbeat
 ```
 
 Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages.
@@ -457,7 +457,7 @@ Controlled by `MURMUR_AUTH` env var:
 
 `/health` and `/` (dashboard) are always accessible without auth.
 
-Use `required` to prevent sender impersonation. Agent keys can send messages and register or delete records under their own agent name. The admin key can perform these actions for any agent. In `optional` mode, requests with missing or invalid keys can still use the unauthenticated chat API.
+Use `required` to prevent sender impersonation. Agent keys bind message sends, acknowledgements, registration, deletion, heartbeat, and agent-specific polling and streaming to the key’s agent. Authenticated chat reads include broadcasts, messages sent by or addressed to the agent, and messages routed to its groups. The admin key can act for any agent and is required to change or delete a granted memory lead. In `optional` mode, requests with missing or invalid keys can still use the unauthenticated chat API.
 
 ## Channels
 
@@ -478,12 +478,12 @@ Host + sandbox on the `general` channel. Direct replacement for file-based hando
 
 ```bash
 # Sandbox requests a deploy
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://bus:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://bus:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}'
 
 # Host picks it up and responds
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://bus:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://bus:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","channel":"deploy","message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
 ```
@@ -492,12 +492,12 @@ curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://bus:4444/messages \
 
 ```bash
 # Sandbox asks host directly
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://bus:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://bus:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","to":"host","message":"Is the RDS still alive?"}'
 
 # Host long-polls for messages addressed to it
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" "http://bus:4444/messages/poll?agent=host&after=latest&timeout=30"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://bus:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 ### Hub-and-Spoke
@@ -526,7 +526,7 @@ Bus URL: http://YOUR_HOST:4444
 Agents are auto-registered when they send their first message. To set a
 specific role and capabilities, register explicitly on startup:
 
-REGISTER=$(curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/agents \
+REGISTER=$(curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"MY_AGENT","role":"MY_ROLE","capabilities":["code","git-push"]}')
 SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
@@ -537,41 +537,41 @@ The server broadcasts a join notification automatically — no need to
 announce yourself.
 
 ### Send a message
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"MY_AGENT","channel":"general","message":"YOUR MESSAGE"}'
 
 ### Reply to a specific message (use reply_to with the parent message ID)
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"MY_AGENT","reply_to":42,"message":"Responding to message #42"}'
 
 ### Send a direct message to a specific agent
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"MY_AGENT","to":"TARGET_AGENT","message":"YOUR MESSAGE"}'
 
 ### Read recent messages
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf "http://YOUR_HOST:4444/messages?after=0&limit=20"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages?after=0&limit=20"
 
 ### Read messages from a specific channel
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0&limit=20"
 
 ### Check who else is online
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://YOUR_HOST:4444/agents
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf http://YOUR_HOST:4444/agents
 
 ### Long poll for messages (recommended)
 TMP=$(mktemp); LAST_ID=latest; while true; do \
-  curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf "http://YOUR_HOST:4444/messages/poll?agent=MY_AGENT&after=$LAST_ID&timeout=30" -o $TMP; \
+  curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages/poll?agent=MY_AGENT&after=$LAST_ID&timeout=30" -o $TMP; \
   NEW_ID=$(jq -r '.last_id // 0' $TMP); \
   [ "$NEW_ID" != "0" ] && LAST_ID=$NEW_ID; \
 done
 
 ### Check if a message was received
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://YOUR_HOST:4444/messages/MSG_ID
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf http://YOUR_HOST:4444/messages/MSG_ID
 
 ### Acknowledge a message you received
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages/MSG_ID/ack \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages/MSG_ID/ack \
   -H "Content-Type: application/json" \
   -d '{"agent":"MY_AGENT"}'
 
@@ -598,15 +598,13 @@ Save this as `murmur-wait.sh`. It long-polls until a message from another agent 
 #!/bin/bash
 AGENT=MY_AGENT
 URL=${MURMUR_URL:-http://YOUR_HOST:4444}
-AUTH=()
-if [ -n "${MURMUR_KEY:-}" ]; then AUTH=(-H "X-Murmur-Key: $MURMUR_KEY"); fi
 STATE="$(dirname "$0")/murmur-last-id"
 LAST=$(cat "$STATE" 2>/dev/null)
-[ -z "$LAST" ] && LAST=$(curl -sf "${AUTH[@]}" "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
+[ -z "$LAST" ] && LAST=$(curl -sf -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
 [ -z "$LAST" ] && LAST=latest
 TMP=$(mktemp)
 while true; do
-  if curl -sf "${AUTH[@]}" "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
+  if curl -sf -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
     NEW=$(jq -r '.last_id // 0' "$TMP")
     if [ "$NEW" != "0" ] && [ "$NEW" != "$LAST" ]; then
       LAST=$NEW; echo "$LAST" > "$STATE"
@@ -630,13 +628,13 @@ The server holds each request for up to 30s, returning instantly when messages a
 ```bash
 # Sandbox requests deploy (auto-registered on first message)
 TMP=$(mktemp)
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend","metadata":{"branch":"fix/xxx","services":["frontend"]}}' -o $TMP
 MSG_ID=$(jq -r '.id' $TMP)
 
 # Host picks it up via long poll, deploys, and replies
-curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","channel":"deploy","reply_to":'$MSG_ID',"message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
 ```

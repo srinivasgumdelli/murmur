@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS memories (
     id SERIAL PRIMARY KEY,
     scope TEXT NOT NULL,
     origin_scope TEXT NOT NULL DEFAULT '',
+    origin_id INT,
     key TEXT,
     kind TEXT NOT NULL DEFAULT 'note',
     source TEXT NOT NULL DEFAULT 'manual',
@@ -33,8 +34,11 @@ CREATE TABLE IF NOT EXISTS memories (
     body_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', body)) STORED
 );
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS origin_scope TEXT NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS origin_id INT;
 ALTER TABLE memories ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
 CREATE INDEX IF NOT EXISTS idx_memories_origin_key ON memories (scope, key, origin_scope, id);
+CREATE INDEX IF NOT EXISTS idx_memories_unkeyed_origin ON memories (scope, origin_id, id DESC)
+    WHERE key IS NULL AND origin_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_memories_author_created ON memories (author, created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_tsv ON memories USING GIN (body_tsv);
 CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories (expires_at) WHERE expires_at IS NOT NULL;
@@ -51,7 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_searches_day ON memory_searches (search_da
 `
 
 const columns = `
-id, scope, origin_scope, COALESCE(key, ''), kind, source, body, tags, author,
+id, scope, origin_scope, origin_id, COALESCE(key, ''), kind, source, body, tags, author,
 COALESCE(session_id, ''), provenance, COALESCE(promoted_by, ''),
 supersedes, created_at, expires_at`
 
@@ -76,7 +80,7 @@ type scanner interface {
 
 func scanMemory(row scanner, tail ...any) (memory.Memory, error) {
 	var m memory.Memory
-	fields := []any{&m.ID, &m.Scope, &m.OriginScope, &m.Key, &m.Kind, &m.Source, &m.Body, &m.Tags, &m.Author,
+	fields := []any{&m.ID, &m.Scope, &m.OriginScope, &m.OriginID, &m.Key, &m.Kind, &m.Source, &m.Body, &m.Tags, &m.Author,
 		&m.SessionID, &m.Provenance, &m.PromotedBy, &m.Supersedes, &m.CreatedAt, &m.ExpiresAt}
 	err := row.Scan(append(fields, tail...)...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -124,7 +128,7 @@ func put(ctx context.Context, tx pgx.Tx, m memory.Memory, scopeCap int, actor me
 			if replacesCurrent && !memory.CanExpire(previous, actor) {
 				return memory.Memory{}, false, memory.ErrForbidden
 			}
-			if replacesCurrent && memory.SameCapture(previous, m) {
+			if replacesCurrent && memory.ReuseCapture(previous, m) {
 				return previous, false, nil
 			}
 			m.Supersedes = &previous.ID
@@ -154,9 +158,9 @@ func put(ctx context.Context, tx pgx.Tx, m memory.Memory, scopeCap int, actor me
 		m.Tags = []string{}
 	}
 	stored, err := scanMemory(tx.QueryRow(ctx, `
-		INSERT INTO memories (scope,origin_scope,key,kind,source,body,tags,author,session_id,provenance,promoted_by,supersedes,created_at,expires_at)
-		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,NULLIF($9,''),$10,NULLIF($11,''),$12,$13,$14)
-		RETURNING `+columns, m.Scope, m.OriginScope, m.Key, m.Kind, m.Source, m.Body, m.Tags, m.Author, m.SessionID,
+		INSERT INTO memories (scope,origin_scope,origin_id,key,kind,source,body,tags,author,session_id,provenance,promoted_by,supersedes,created_at,expires_at)
+		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8,$9,NULLIF($10,''),$11,NULLIF($12,''),$13,$14,$15)
+		RETURNING `+columns, m.Scope, m.OriginScope, m.OriginID, m.Key, m.Kind, m.Source, m.Body, m.Tags, m.Author, m.SessionID,
 		m.Provenance, m.PromotedBy, m.Supersedes, m.CreatedAt, m.ExpiresAt))
 	return stored, err == nil, err
 }
@@ -265,33 +269,45 @@ func (s *Store) Search(ctx context.Context, q memory.Query, at time.Time) (memor
 	return result, rows.Err()
 }
 
-func (s *Store) Promote(ctx context.Context, id int, by string, at time.Time, scopeCap int) (memory.Memory, error) {
+func (s *Store) Promote(ctx context.Context, id int, by string, at time.Time, scopeCap int) (memory.Memory, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockScope(ctx, tx, memory.SharedScope); err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
+	}
+	// Keep an active promotion for a keyless source idempotent even if the
+	// reported entry has already expired. The scope lock also covers retries.
+	existing, err := scanMemory(tx.QueryRow(ctx, "SELECT "+columns+` FROM memories
+		WHERE scope=$1 AND key IS NULL AND origin_id=$2
+		AND superseded_at IS NULL AND (expires_at IS NULL OR expires_at > $3)
+		ORDER BY id DESC LIMIT 1 FOR UPDATE`, memory.SharedScope, id, at))
+	if err == nil {
+		return existing, false, tx.Commit(ctx)
+	}
+	if !errors.Is(err, memory.ErrNotFound) {
+		return memory.Memory{}, false, err
 	}
 	m, err := scanMemory(tx.QueryRow(ctx, "SELECT "+columns+` FROM memories
 		WHERE id=$1 AND superseded_at IS NULL AND (expires_at IS NULL OR expires_at > $2) FOR UPDATE`, id, at))
 	if err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
 	}
 	if m.Kind == memory.KindNone || m.Provenance == memory.Promoted {
-		return memory.Memory{}, fmt.Errorf("%w: only reported notes can be promoted", memory.ErrInvalid)
+		return memory.Memory{}, false, fmt.Errorf("%w: only reported notes can be promoted", memory.ErrInvalid)
 	}
-	m.OriginScope, m.Scope = m.Scope, memory.SharedScope
+	m.OriginScope, m.OriginID, m.Scope = m.Scope, &id, memory.SharedScope
 	m.Provenance = memory.Promoted
 	m.PromotedBy = by
 	m.CreatedAt = at
 	m.ExpiresAt = nil
-	stored, _, err := put(ctx, tx, m, scopeCap, memory.Actor{Lead: true})
+	stored, created, err := put(ctx, tx, m, scopeCap, memory.Actor{Lead: true})
 	if err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
 	}
-	return stored, tx.Commit(ctx)
+	return stored, created, tx.Commit(ctx)
 }
 
 func (s *Store) Expire(ctx context.Context, id int, actor memory.Actor, at time.Time) (memory.Memory, error) {

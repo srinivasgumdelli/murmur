@@ -92,6 +92,7 @@ CREATE TABLE memories (
     provenance   TEXT NOT NULL DEFAULT 'reported',  -- reported | promoted
     promoted_by  TEXT,
     origin_scope TEXT NOT NULL DEFAULT '', -- source workspace or task for a promotion
+    origin_id    INT,                     -- source entry ID for a promotion
     source       TEXT NOT NULL DEFAULT 'manual',  -- manual | capture
     supersedes   INT REFERENCES memories(id) ON DELETE SET NULL,
     superseded_at TIMESTAMPTZ,
@@ -100,7 +101,9 @@ CREATE TABLE memories (
     body_tsv     TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', body)) STORED
 );
 
-CREATE INDEX idx_memories_scope_key ON memories (scope, origin_scope, key, id);
+CREATE INDEX idx_memories_origin_key ON memories (scope, key, origin_scope, id);
+CREATE INDEX idx_memories_unkeyed_origin ON memories (scope, origin_id, id DESC)
+    WHERE key IS NULL AND origin_id IS NOT NULL;
 CREATE INDEX idx_memories_author_created ON memories (author, created_at);
 CREATE INDEX idx_memories_tsv ON memories USING GIN (body_tsv);
 ```
@@ -113,13 +116,16 @@ CREATE TABLE memories (
     body TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',   -- JSON array
     author TEXT NOT NULL, session_id TEXT,
     provenance TEXT NOT NULL DEFAULT 'reported', promoted_by TEXT,
-    origin_scope TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual',
+    origin_scope TEXT NOT NULL DEFAULT '', origin_id INTEGER,
+    source TEXT NOT NULL DEFAULT 'manual',
     supersedes INTEGER REFERENCES memories(id) ON DELETE SET NULL,
     superseded_at INTEGER,
     created_at INTEGER NOT NULL,          -- UTC microseconds
     expires_at INTEGER
 );
-CREATE INDEX idx_memories_scope_key ON memories (scope, origin_scope, key, id);
+CREATE INDEX idx_memories_origin_key ON memories (scope, key, origin_scope, id DESC);
+CREATE INDEX idx_memories_unkeyed_origin ON memories (scope, origin_id, id DESC)
+    WHERE key IS NULL AND origin_id IS NOT NULL;
 CREATE INDEX idx_memories_author_created ON memories (author, created_at);
 CREATE VIRTUAL TABLE memories_fts USING fts5(body, content='memories', content_rowid='id');
 -- plus insert/delete triggers keeping memories_fts in sync
@@ -166,7 +172,7 @@ One entry, with its `supersedes` chain when `include_history=true`.
 
 ### `POST /memories/{id}/promote`
 
-Lead role or admin key only. Copies the entry into `scope = 'shared'` with `provenance = 'promoted'` and `promoted_by` set, superseding the current shared entry for the same origin scope and key.
+Lead role or admin key only. Copies the entry into `scope = 'shared'` with `provenance = 'promoted'` and `promoted_by` set, superseding the current shared entry for the same origin scope and key. A retry for a keyless note returns the existing live promotion.
 
 ### `DELETE /memories/{id}`
 
@@ -206,7 +212,7 @@ The murmur-connect skill ships Claude Code hooks that load context, capture sele
 
 | Purpose | Hook |
 |---|---|
-| Load memory | `SessionStart` on startup, resume, and compact |
+| Load memory | `SessionStart` on startup, resume, compact, clear, and fork |
 | Record mechanical facts | `PostToolUse` on Bash |
 | Ask for a deliberate write | `Stop` |
 | Guard local memory paths | `PreToolUse` on Write, Edit, MultiEdit, and NotebookEdit |
@@ -221,7 +227,7 @@ The [stop hook](../../skills/murmur-connect/hooks/memory-gate.sh) searches scope
 
 ### Mechanical capture
 
-The [capture hook](../../skills/murmur-connect/hooks/memory-capture.sh) saves recognized successful foreground commands under keys such as `cmd.test` and sets `source=capture`. Repeating the same capture for the same author and key keeps the existing row.
+The [capture hook](../../skills/murmur-connect/hooks/memory-capture.sh) saves recognized successful foreground commands under keys such as `cmd.test` and sets `source=capture`. Short retries reuse the existing row. Continued captures append a new version with a refreshed TTL once one quarter of the TTL or one day has elapsed, whichever is sooner.
 
 ### Local path guard
 
@@ -366,7 +372,7 @@ Done when: the suite passes on SQLite and Postgres in CI, and murmur starts with
 - **4.1 Scripts** in `skills/murmur-connect/hooks/`: `memory-load.sh` (SessionStart), `memory-gate.sh` (Stop), `memory-capture.sh` (PostToolUse on Bash), `memory-guard.sh` (PreToolUse on Write and Edit). They read `MURMUR_URL`, `MURMUR_KEY` and `MURMUR_WORKSPACE`, and need only `bash`, `curl` and `jq`.
 - **4.2 Failure behaviour.** If murmur is unreachable, load and capture exit 0 silently, and the gate exits 0 with a warning on stderr. A murmur outage must never trap an agent in a session.
 - **4.3 Capture rules.** A table of command patterns and keys (`make test`, `go test`, `npm test`, `pytest` → `cmd.test`; `make build`, `go build`, `npm run build` → `cmd.build`; `golangci-lint`, `eslint`, `ruff` → `cmd.lint`). Only successful runs are recorded. Arguments are stored, environment variables are not, to avoid leaking secrets.
-- **4.4 Settings snippet.** `hooks.json` to merge into `.claude/settings.json`, with matchers: SessionStart (`startup|resume|compact`), Stop, PostToolUse (`Bash`), PreToolUse (`Write|Edit`). Also the auto-memory setting from 0.3.
+- **4.4 Settings snippet.** `hooks.json` to merge into `.claude/settings.json`, with matchers: SessionStart (`startup|resume|compact|clear|fork`), Stop, PostToolUse (`Bash`), PreToolUse (`Write|Edit`). Also the auto-memory setting from 0.3.
 - **4.5 Tests.** A Go test starts a fake murmur (`httptest`) and runs each script with recorded hook inputs, checking its output JSON, the requests sent, and exit codes. Cases: memory present or empty; gate with zero writes, one write and `stop_hook_active`; capture on success and on failure; guard on memory paths and ordinary paths; murmur down.
 - **4.6 Skill text.** Update `SKILL.md`: what memory is for, the HTTP calls until MCP exists, the rule against local memory files, how to install the hooks, and the required auth setting.
 - **4.7 Manual check.** One real Claude Code session against a local murmur: memory appears at start, the gate blocks once, a test run is captured, a write to `MEMORY.md` is denied.
@@ -413,7 +419,7 @@ Done when: script tests pass in CI and the manual check is recorded in the PR.
 
 - Postgres is the default memory store. The SQLite option stores memory in a separate local file while Postgres continues to serve messages, agents, and keys. The SQLite pool setup can be reused when chat storage moves.
 - Both stores serialize version updates and scope-cap decisions. Postgres locks the scope and the previous row. SQLite takes a write lock when it begins the transaction. Both retain a superseded marker so expiring or purging a newer row cannot bring an older version back into normal search.
-- Writes to the shared scope go through promotion. Admin-authored memory uses the reserved author `@murmur-admin`. Workspace and task scopes are search filters available to authenticated clients. Only the author, a lead, or the admin may supersede a current keyed entry. Promotions preserve the original scope, so shared entries from two projects can use the same key. Existing promotions created before origin tracking keep an empty origin because their source scope was never stored.
-- Memory SSE uses a dedicated scoped subscription at `/messages/stream?types=memory`. Authenticated search metrics use the optional `X-Murmur-Session-ID` header independently of the entry's `session_id` filter.
+- Writes to the shared scope go through promotion. Admin-authored memory uses the reserved author `@murmur-admin`. Workspace and task scopes are search filters available to authenticated clients. Only the author, a lead, or the admin may supersede a current keyed entry. Promotions preserve the original scope, so shared entries from two projects can use the same key. Existing promotions created before origin tracking keep an empty origin because their source scope was never stored. Source entry IDs are recorded for new promotions.
+- Memory SSE uses a dedicated scoped subscription at `/messages/stream?types=memory`. `GET /memories` uses the optional `X-Murmur-Session-ID` header for authenticated search metrics independently of the entry's `session_id` filter.
 - The Claude Code hooks preserve the once-per-session check across resume and compaction. Capture recognizes a curated set of successful foreground commands and safe arguments. The stop gate checks scoped history for manual writes by the author and Claude Code session ID. A captured command never satisfies the gate, and each session receives at most one save prompt.
 - The first release includes the three memory tools at `/mcp`. Vectors, transcript harvesting, and failed-then-passed command detection remain later work as described in Rollout.
