@@ -137,7 +137,7 @@ Rules:
 
 - **Current entry:** the latest live, unsuperseded row for a scope and key. Shared entries also group by their original scope. Unkeyed entries each have their own identity.
 - **Upsert by key:** the current author, a lead, or the admin can supersede a live keyed entry by inserting a new version.
-- **`kind = 'none'`** records that an agent had nothing worth saving. It counts as a manual write for the stop gate and toward the scope cap. Default searches filter these entries out before applying the limit.
+- **`kind = 'none'`** records that an agent had nothing worth saving. It counts as a manual write for the stop gate. These markers expire within seven days and are excluded from the scope cap. Default searches filter these entries out before applying the limit.
 - **Size limit:** `body` capped at 4096 bytes. Memory holds short notes, not documents.
 
 ## API
@@ -261,7 +261,7 @@ Memory is a murmur feature and runs wherever murmur runs.
 
 - `ttl_days` per write, default 90 for `reported` entries. Promoted entries don't expire unless set.
 - The existing reaper purges expired rows and superseded promoted versions after the retention window, 30 days by default.
-- Per-scope cap (default 1,000 current entries). Writes past the cap return `429` with a hint to expire or consolidate.
+- Per-scope cap (default 1,000 current notes, commands, decisions, and pitfalls). Writes past the cap return `429` with a hint to expire or consolidate.
 
 ## Observability
 

@@ -58,5 +58,5 @@ if [[ -n $key ]]; then
   args+=(--header @/dev/fd/3)
 fi
 
-exec curl -qfsS --globoff --proto '=http,https' --connect-timeout 5 --max-time 40 \
+exec curl -q -fsS --no-location --globoff --proto '=http,https' --connect-timeout 5 --max-time 40 \
   "${args[@]}" -- "${base%/}$route"

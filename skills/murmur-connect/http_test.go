@@ -4,7 +4,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -16,9 +18,22 @@ func TestHTTPHelper(t *testing.T) {
 			t.Skipf("requires %s", name)
 		}
 	}
+	curlHome := t.TempDir()
+	if err := os.WriteFile(filepath.Join(curlHome, ".curlrc"), []byte("location\nheader = \"X-From-Curlrc: yes\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CURL_HOME", curlHome)
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("helper followed a redirect")
+	}))
+	t.Cleanup(redirect.Close)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Murmur-Key") != "test-agent-key" {
 			t.Error("missing authentication header")
+		}
+		if r.Header.Get("X-From-Curlrc") != "" {
+			t.Error("helper used the caller's curl configuration")
 		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /memories":
@@ -31,7 +46,7 @@ func TestHTTPHelper(t *testing.T) {
 				t.Errorf("wrong body: %q (%v)", body, err)
 			}
 		case "GET /health":
-			http.Redirect(w, r, "/outside", http.StatusTemporaryRedirect)
+			http.Redirect(w, r, redirect.URL, http.StatusTemporaryRedirect)
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
