@@ -44,6 +44,10 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		viewer := AgentFromContext(r.Context())
+		deliveryAgent := viewer
+		if deliveryAgent == "" {
+			deliveryAgent = agent
+		}
 
 		conn, err := pool.Acquire(r.Context())
 		if err != nil {
@@ -131,11 +135,11 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 				var msg model.Message
 				err = pool.QueryRow(r.Context(),
 					`UPDATE messages SET status = CASE
-					 WHEN status = 'sent' AND ($2 = '' OR sender <> $2 OR "to" = $2) THEN 'delivered'
+					 WHEN status = 'sent' AND ($3 = '' OR sender <> $3 OR "to" = $3) THEN 'delivered'
 					 ELSE status END
 					 WHERE id = $1 AND `+messageVisibility+`
 					 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at`,
-					payload.ID, viewer,
+					payload.ID, viewer, deliveryAgent,
 				).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
 				if err != nil {
 					if !errors.Is(err, pgx.ErrNoRows) {
