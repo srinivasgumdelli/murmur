@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,11 +45,17 @@ func TestMemoryMCP(t *testing.T) {
 			if entry.Author != "alice" || entry.Provenance != memory.Reported {
 				t.Errorf("wrong MCP author or provenance: %+v", entry)
 			}
+			if entry.Kind == memory.KindNone && (entry.Body != "" || entry.SessionID != "current-session") {
+				t.Errorf("wrong MCP none entry: %+v", entry)
+			}
 			entry.ID = 1
 			return entry, nil
 		},
 		search: func(q memory.Query) (memory.Result, error) {
-			if len(q.Scopes) != 2 || q.Scopes[0] != "workspace:repo" || q.Scopes[1] != "shared" || q.Text != "test" || q.Limit != 2 {
+			if len(q.Scopes) != 2 || q.Scopes[0] != "workspace:repo" || q.Scopes[1] != "shared" ||
+				q.Text != "test" || q.Limit != 2 || q.Author != "alice" || q.Source != "manual" ||
+				q.SessionID != "entry-session" || q.SearchSessionID != "metrics-session" || !q.IncludeHistory ||
+				!q.Since.Equal(time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)) {
 				t.Errorf("wrong MCP query: %+v", q)
 			}
 			return memory.Result{Items: []memory.Memory{{ID: 1}}, Total: 1}, nil
@@ -76,6 +83,10 @@ func TestMemoryMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer alice.Close()
+	info := alice.InitializeResult().ServerInfo
+	if info.Name != "murmur" || info.Version == "" {
+		t.Fatalf("wrong MCP server info: %+v", info)
+	}
 	bob, err := sessionFor("bob")
 	if err != nil {
 		t.Fatal(err)
@@ -91,19 +102,37 @@ func TestMemoryMCP(t *testing.T) {
 		tool      string
 		args      map[string]any
 		wantError bool
+		wantText  string
 	}{
-		{alice, "memory_put", map[string]any{"scope": "workspace:repo", "body": "make test"}, false},
-		{alice, "memory_put", map[string]any{"scope": "shared", "body": "fake project fact"}, true},
-		{alice, "memory_put", map[string]any{"scope": "workspace:repo", "body": ""}, true},
-		{alice, "memory_search", map[string]any{"q": "test", "scope": "workspace:repo,shared", "limit": 2}, false},
-		{alice, "memory_search", map[string]any{"scope": "invalid"}, true},
-		{alice, "memory_expire", map[string]any{"id": 1}, false},
-		{alice, "memory_expire", map[string]any{"id": 2}, true},
-		{bob, "memory_expire", map[string]any{"id": 1}, true},
+		{alice, "memory_put", map[string]any{"scope": "workspace:repo", "body": "make test"}, false, ""},
+		{alice, "memory_put", map[string]any{"scope": "workspace:repo", "kind": "none", "session_id": "current-session"}, false, ""},
+		{alice, "memory_put", map[string]any{"scope": "shared", "body": "fake project fact"}, true, ""},
+		{alice, "memory_put", map[string]any{"scope": "workspace:repo"}, true, ""},
+		{alice, "memory_put", map[string]any{"scope": "workspace:repo", "body": strings.Repeat("é", 2049)}, true, "4096"},
+		{alice, "memory_search", map[string]any{
+			"q": "test", "scope": "workspace:repo,shared", "limit": 2, "author": "me", "source": "manual",
+			"session_id": "entry-session", "search_session_id": "metrics-session", "include_history": true,
+			"since": "2026-11-26T00:00:00Z",
+		}, false, ""},
+		{alice, "memory_search", map[string]any{"scope": "invalid"}, true, ""},
+		{alice, "memory_search", map[string]any{"since": "yesterday"}, true, ""},
+		{alice, "memory_expire", map[string]any{"id": 1}, false, ""},
+		{alice, "memory_expire", map[string]any{"id": 2}, true, ""},
+		{bob, "memory_expire", map[string]any{"id": 1}, true, ""},
 	} {
 		result, err := tc.session.CallTool(ctx, &mcp.CallToolParams{Name: tc.tool, Arguments: tc.args})
 		if err != nil || result.IsError != tc.wantError {
-			t.Errorf("%s with %+v: got %+v, %v, want tool error %v", tc.tool, tc.args, result, err, tc.wantError)
+			t.Errorf("%s: got %+v, %v, want tool error %v", tc.tool, result, err, tc.wantError)
+			continue
+		}
+		if tc.wantText != "" {
+			if len(result.Content) == 0 {
+				t.Errorf("%s: missing error content", tc.tool)
+				continue
+			}
+			if text, ok := result.Content[0].(*mcp.TextContent); !ok || !strings.Contains(text.Text, tc.wantText) {
+				t.Errorf("%s: got error content %+v, want %q", tc.tool, result.Content[0], tc.wantText)
+			}
 		}
 	}
 

@@ -4,8 +4,10 @@ const schema = `
 CREATE TABLE IF NOT EXISTS memories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     scope TEXT NOT NULL,
+    origin_scope TEXT NOT NULL DEFAULT '',
     key TEXT,
     kind TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'manual',
     body TEXT NOT NULL,
     tags TEXT NOT NULL DEFAULT '[]',
     author TEXT NOT NULL,
@@ -17,7 +19,6 @@ CREATE TABLE IF NOT EXISTS memories (
     expires_at INTEGER,
     superseded_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS idx_memories_scope_key ON memories(scope, key, id DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_author_created ON memories(author, created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at) WHERE expires_at IS NOT NULL;

@@ -91,13 +91,16 @@ CREATE TABLE memories (
     session_id   TEXT,                   -- optional, for tracing
     provenance   TEXT NOT NULL DEFAULT 'reported',  -- reported | promoted
     promoted_by  TEXT,
-    supersedes   INT REFERENCES memories(id),
+    origin_scope TEXT NOT NULL DEFAULT '', -- source workspace or task for a promotion
+    source       TEXT NOT NULL DEFAULT 'manual',  -- manual | capture
+    supersedes   INT REFERENCES memories(id) ON DELETE SET NULL,
+    superseded_at TIMESTAMPTZ,
     created_at   TIMESTAMPTZ DEFAULT now(),
     expires_at   TIMESTAMPTZ,
     body_tsv     TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', body)) STORED
 );
 
-CREATE INDEX idx_memories_scope_key ON memories (scope, key);
+CREATE INDEX idx_memories_scope_key ON memories (scope, origin_scope, key, id);
 CREATE INDEX idx_memories_author_created ON memories (author, created_at);
 CREATE INDEX idx_memories_tsv ON memories USING GIN (body_tsv);
 ```
@@ -110,11 +113,13 @@ CREATE TABLE memories (
     body TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]',   -- JSON array
     author TEXT NOT NULL, session_id TEXT,
     provenance TEXT NOT NULL DEFAULT 'reported', promoted_by TEXT,
-    supersedes INTEGER REFERENCES memories(id),
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    expires_at TEXT
+    origin_scope TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'manual',
+    supersedes INTEGER REFERENCES memories(id) ON DELETE SET NULL,
+    superseded_at INTEGER,
+    created_at INTEGER NOT NULL,          -- UTC microseconds
+    expires_at INTEGER
 );
-CREATE INDEX idx_memories_scope_key ON memories (scope, key);
+CREATE INDEX idx_memories_scope_key ON memories (scope, origin_scope, key, id);
 CREATE INDEX idx_memories_author_created ON memories (author, created_at);
 CREATE VIRTUAL TABLE memories_fts USING fts5(body, content='memories', content_rowid='id');
 -- plus insert/delete triggers keeping memories_fts in sync
@@ -124,10 +129,10 @@ The SQLite backend runs in WAL mode with short write transactions. One writer at
 
 Rules:
 
-- **Current entry:** the latest row for a `(scope, key)` pair that is not expired and not superseded. Entries without a key are each their own entry.
-- **Upsert by key:** writing with an existing `(scope, key)` inserts a new row that supersedes the current one.
-- **`kind = 'none'`** records that an agent had nothing worth saving. It counts as a write for the stop gate and is excluded from search and injection.
-- **Size limit:** `body` capped at 4 KB. Memory holds short notes, not documents.
+- **Current entry:** the latest live, unsuperseded row for a scope and key. Shared entries also group by their original scope. Unkeyed entries each have their own identity.
+- **Upsert by key:** the current author, a lead, or the admin can supersede a live keyed entry by inserting a new version.
+- **`kind = 'none'`** records that an agent had nothing worth saving. It counts as a manual write for the stop gate and toward the scope cap. Default searches filter these entries out before applying the limit.
+- **Size limit:** `body` capped at 4096 bytes. Memory holds short notes, not documents.
 
 ## API
 
@@ -161,7 +166,7 @@ One entry, with its `supersedes` chain when `include_history=true`.
 
 ### `POST /memories/{id}/promote`
 
-Lead role or admin key only. Copies the entry into `scope = 'shared'` with `provenance = 'promoted'` and `promoted_by` set, superseding any current shared entry with the same key.
+Lead role or admin key only. Copies the entry into `scope = 'shared'` with `provenance = 'promoted'` and `promoted_by` set, superseding the current shared entry for the same origin scope and key.
 
 ### `DELETE /memories/{id}`
 
@@ -179,18 +184,7 @@ Admin key only. Removes the row. Logged.
 
 ## Storage
 
-A `MemoryStore` interface sits below the trust layer:
-
-```go
-type MemoryStore interface {
-    Put(ctx context.Context, m Memory) (Memory, error)
-    Get(ctx context.Context, id int, withHistory bool) ([]Memory, error)
-    Search(ctx context.Context, q Query) (items []Memory, total int, err error)
-    Promote(ctx context.Context, id int, by string) (Memory, error)
-    Expire(ctx context.Context, id int, at time.Time) error
-    Purge(ctx context.Context, id int) error
-}
-```
+The [store interface](../../internal/memory/store.go) sits below the trust layer. Each backend applies the authorization check for keyed replacement inside the transaction that selects and supersedes the current row.
 
 Author binding, permission checks, the auth-mode guard, size limits and notifications live in a service layer above the interface, shared by the HTTP handlers and MCP tools, so they apply to any backend: Postgres now, SQLite later, an external engine if ever adopted.
 
@@ -198,7 +192,7 @@ One behaviour test suite runs against every backend (author binding, upsert by k
 
 ## Notifications
 
-Writes, promotions and expiries publish on the existing notifier as `memory` events (`{id, scope, key, kind, provenance}`). Agents already streaming messages can subscribe to memory events by scope. A host embedding murmur hooks the same events into its audit trail.
+Writes, promotions, expiries, and explicit purges publish on the notifier as `memory` events. Each event carries its action and entry metadata. Agents already streaming messages can subscribe to memory events by scope. A host embedding murmur hooks the same events into its audit trail.
 
 ## Agent access
 
@@ -208,69 +202,30 @@ Writes, promotions and expiries publish on the existing notifier as `memory` eve
 
 ## Enforcement with hooks
 
-A model can't be made to call a tool. Hooks make reads automatic, force a write before stopping, capture mechanical facts without the model, and block the alternatives. The hooks ship with the murmur-connect skill.
+The murmur-connect skill ships Claude Code hooks that load context, capture selected commands, check for a deliberate write, and guard configured memory paths.
 
-| Purpose | Hook | Strength |
-|---|---|---|
-| Load memory | `SessionStart` (startup, resume, compact) | Full: the model doesn't decide |
-| Record mechanical facts | `PostToolUse` on Bash | Full: the hook writes, not the model |
-| Record judgment | `Stop` gate | Forces a write; can't judge its quality |
-| Block local memory files | `PreToolUse` on Write/Edit | Full, if hooks can't be edited |
+| Purpose | Hook |
+|---|---|
+| Load memory | `SessionStart` on startup, resume, and compact |
+| Record mechanical facts | `PostToolUse` on Bash |
+| Ask for a deliberate write | `Stop` |
+| Guard local memory paths | `PreToolUse` on Write, Edit, MultiEdit, and NotebookEdit |
 
-### Load: `SessionStart`
+### Load
 
-Fetches current entries for the agent's workspace, task and shared scopes, and returns them as `additionalContext`. Runs on startup, resume and after compaction, so memory survives long sessions. It also records the session start time for the stop gate.
+The [load hook](../../skills/murmur-connect/hooks/memory-load.sh) fetches current workspace, task, and shared memory and injects it as `additionalContext`. The API excludes explicit empty records from the default search before limiting the results.
 
-```bash
-#!/usr/bin/env bash
-# hooks/memory-load.sh
-input=$(cat)
-sid=$(jq -r .session_id <<<"$input")
-date -u +%Y-%m-%dT%H:%M:%SZ > "${TMPDIR:-/tmp}/murmur-mem-$sid"
+### Write gate
 
-curl -sf -H "Authorization: Bearer $MURMUR_KEY" \
-  "$MURMUR_URL/memories?scope=workspace:$MURMUR_WORKSPACE,shared&limit=50" |
-jq '{hookSpecificOutput: {hookEventName: "SessionStart",
-     additionalContext: ("Project memory (murmur):\n" +
-       (.items | map("- [" + .provenance + ", " + .author + "] " + .body) | join("\n")))}}'
-```
+The [stop hook](../../skills/murmur-connect/hooks/memory-gate.sh) searches scoped history by authenticated author and Claude Code session ID. It uses `source=manual` so a captured command cannot satisfy the gate. One deliberate note or a `kind=none` record satisfies the check. If the check succeeds and finds no writes, the hook blocks once per session and supplies the current session ID in the save prompt. A Murmur outage lets the agent stop.
 
-### Write gate: `Stop`
+### Mechanical capture
 
-Counts entries this agent wrote since the session started. If there are none, it blocks stopping and tells the agent to write something, or an explicit `none`. `stop_hook_active` limits this to one retry, so a stubborn agent can't loop forever.
+The [capture hook](../../skills/murmur-connect/hooks/memory-capture.sh) saves recognized successful foreground commands under keys such as `cmd.test` and sets `source=capture`. Repeating the same capture for the same author and key keeps the existing row.
 
-The gate counts by author and start time, not by Claude Code's session id. The agent's MCP calls don't know that id, so a session-id filter would never match.
+### Local path guard
 
-```bash
-#!/usr/bin/env bash
-# hooks/memory-gate.sh
-input=$(cat)
-[ "$(jq -r .stop_hook_active <<<"$input")" = "true" ] && exit 0
-sid=$(jq -r .session_id <<<"$input")
-since=$(cat "${TMPDIR:-/tmp}/murmur-mem-$sid" 2>/dev/null) || exit 0
-
-total=$(curl -sf -H "Authorization: Bearer $MURMUR_KEY" \
-  "$MURMUR_URL/memories?author=me&since=$since&kind=any&limit=1" | jq .total)
-[ "${total:-0}" -gt 0 ] && exit 0
-
-jq -n '{decision: "block",
-  reason: "Before stopping: save anything future agents need with memory_put (commands, decisions, pitfalls). If nothing is worth saving, call memory_put with kind \"none\"."}'
-```
-
-`kind=any` includes `none` entries in the count.
-
-### Mechanical capture: `PostToolUse`
-
-Writes facts a script can recognise, with no model involved:
-
-- A successful test or build command (`make test`, `go test`, `npm run build`, `pytest`) is stored as `kind = 'command'` under a stable key such as `cmd.test`, so repeats update one entry.
-- Later: a command that failed and then passed after a change, stored as `kind = 'pitfall'`. Harder to detect reliably, so it's not in the first version.
-
-### Block alternatives: `PreToolUse`
-
-Denies `Write` and `Edit` to local memory locations: `*/.claude/projects/*/memory/*`, `MEMORY.md`, and configured repo notes paths. Returns `permissionDecision: "deny"` with a reason pointing to `memory_put`.
-
-Also turn off Claude Code's built-in auto-memory in agent settings. Confirm the exact setting name against current Claude Code docs before documenting it.
+The [guard hook](../../skills/murmur-connect/hooks/memory-guard.sh) protects the project-root `MEMORY.md`, Claude Code auto-memory paths, and configured notes paths. Disable built-in auto-memory with `autoMemoryEnabled: false`.
 
 ### Optional: transcript harvest
 
@@ -299,7 +254,7 @@ Memory is a murmur feature and runs wherever murmur runs.
 ## Retention
 
 - `ttl_days` per write, default 90 for `reported` entries. Promoted entries don't expire unless set.
-- The existing reaper also expires old memory rows. Expired rows are kept for 30 days for history, then purged.
+- The existing reaper purges expired rows and superseded promoted versions after the retention window, 30 days by default.
 - Per-scope cap (default 1,000 current entries). Writes past the cap return `429` with a hint to expire or consolidate.
 
 ## Observability
@@ -360,7 +315,7 @@ Done when: all handler tests pass, including the existing poll tests.
 
 ### Phase 2 — Memory core on Postgres (3 days)
 
-- **2.1 Types and interface.** `memory.go` and `store.go` as in Storage. Validation helpers: scope format (`workspace:<id>`, `task:<id>`, `shared`), kind values, 4 KB body limit, key format.
+- **2.1 Types and interface.** `memory.go` and `store.go` as in Storage. Validation helpers: scope format (`workspace:<id>`, `task:<id>`, `shared`), kind values, 4096 bytes body limit, key format.
   Tests: validation table tests.
 - **2.2 Shared suite.** `storetest.Run` covers:
   - put and get, with server-set fields kept;
@@ -443,14 +398,14 @@ Done when: script tests pass in CI and the manual check is recorded in the PR.
 - How agents learn their workspace id: from an env var set at launch (`MURMUR_WORKSPACE`), or derived from the git remote.
 - Whether the `lead` role used for promotion is a new value in `agents.role` or comes from groups.
 - Whether search should also return relevant recent messages, or stay strictly separate.
-- Default caps (4 KB body, 1,000 entries per scope, 90-day TTL) need checking against real use.
+- Default caps (4096 bytes body, 1,000 entries per scope, 90-day TTL) need checking against real use.
 
 ## Phase 0 decisions
 
 - Launchers set `MURMUR_WORKSPACE` explicitly and may set `MURMUR_TASK`. This keeps scope names stable across checkouts.
 - The admin grants promotion authority by registering an agent with `role=lead` using the admin key. Registration by an ordinary agent can set its display role but cannot grant promotion authority. Existing lead records require an admin registration to acquire the grant.
 - Memory search returns memory entries. Existing message endpoints continue to serve chat history.
-- The initial defaults are a 4 KiB body, 1,000 current entries per scope, and a 90-day TTL for reports. Review them with deployment data.
+- The initial defaults are a 4096-byte body, 1,000 current entries per scope, and a 90-day TTL for reports. Review them with deployment data.
 - Claude Code documents startup, resume and compact session-start sources and `additionalContext`, the one-retry stop decision, and the write/edit denial response. Bash's successful post-tool hook has a structured result with interruption status. Disable built-in auto-memory with `autoMemoryEnabled: false`. [Claude Code hooks](https://code.claude.com/docs/en/hooks) and [Claude Code memory](https://code.claude.com/docs/en/memory).
 - The FTS5 spike passed with `CGO_ENABLED=0` and `modernc.org/sqlite` v1.63.0 using WAL, an external-content table, an insert trigger, and a ranked query with `bm25()`. [SQLite driver](https://pkg.go.dev/modernc.org/sqlite@v1.63.0).
 
@@ -458,7 +413,7 @@ Done when: script tests pass in CI and the manual check is recorded in the PR.
 
 - Postgres is the default memory store. The SQLite option stores memory in a separate local file while Postgres continues to serve messages, agents, and keys. The SQLite pool setup can be reused when chat storage moves.
 - Both stores serialize version updates and scope-cap decisions. Postgres locks the scope and the previous row. SQLite takes a write lock when it begins the transaction. Both retain a superseded marker so expiring or purging a newer row cannot bring an older version back into normal search.
-- Writes to the shared scope go through promotion. Admin-authored memory uses the reserved author `@murmur-admin`. Workspace and task scopes are search filters available to authenticated clients.
+- Writes to the shared scope go through promotion. Admin-authored memory uses the reserved author `@murmur-admin`. Workspace and task scopes are search filters available to authenticated clients. Only the author, a lead, or the admin may supersede a current keyed entry. Promotions preserve the original scope, so shared entries from two projects can use the same key. Existing promotions created before origin tracking keep an empty origin because their source scope was never stored.
 - Memory SSE uses a dedicated scoped subscription at `/messages/stream?types=memory`. Authenticated search metrics use the optional `X-Murmur-Session-ID` header independently of the entry's `session_id` filter.
-- The Claude Code hooks preserve the original session start time across resume and compaction. Capture recognizes a curated set of successful foreground commands and safe arguments. The stop gate checks scoped history by author and start time. Per-session counts can overlap when the same agent key is used concurrently.
+- The Claude Code hooks preserve the once-per-session check across resume and compaction. Capture recognizes a curated set of successful foreground commands and safe arguments. The stop gate checks scoped history for manual writes by the author and Claude Code session ID. A captured command never satisfies the gate, and each session receives at most one save prompt.
 - The first release includes the three memory tools at `/mcp`. Vectors, transcript harvesting, and failed-then-passed command detection remain later work as described in Rollout.

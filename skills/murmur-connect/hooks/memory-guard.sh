@@ -2,7 +2,6 @@
 
 command -v jq >/dev/null || exit 0
 input=$(cat)
-file=$(jq -er 'select(.tool_name == "Write" or .tool_name == "Edit") | .tool_input.file_path | strings | select(length > 0)' <<< "$input" 2>/dev/null) || exit 0
 
 canonicalize() {
   jq -nr --arg file "$1" '
@@ -13,39 +12,70 @@ canonicalize() {
   '
 }
 
-project=${CLAUDE_PROJECT_DIR:-$(jq -r '.cwd // "/"' <<< "$input")}
-[[ $file == \~/* ]] && file="$HOME/${file:2}"
-[[ $file == /* || $file =~ ^[A-Za-z]: ]] || file="$project/$file"
-file=$(canonicalize "$file") || exit 0
+cwd=$(jq -er --arg project "${CLAUDE_PROJECT_DIR:-/}" '.cwd // $project | strings' <<< "$input") || exit 0
+project=${CLAUDE_PROJECT_DIR:-$cwd}
+config=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 
 deny() {
   jq -cn '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny",
-    permissionDecisionReason: "Store project knowledge with Murmur memory_put or POST /memories."}}'
+    permissionDecisionReason: "Store project knowledge with Murmur POST /memories."}}'
   exit 0
 }
 
-# Compare both spellings when realpath can resolve the file or its parent.
-candidates=("$file")
-if command -v realpath >/dev/null; then
-  if resolved=$(realpath -- "$file" 2>/dev/null); then
-    candidates+=("$resolved")
-  elif resolved=$(realpath -- "${file%/*}/" 2>/dev/null); then
-    candidates+=("${resolved%/}/${file##*/}")
+absolute_path() {
+  local path=$1 base=$2
+  [[ $path == \~/* ]] && path="$HOME/${path:2}"
+  [[ $path == /* || $path =~ ^[A-Za-z]: ]] || path="$base/$path"
+  printf '%s\n' "$path"
+}
+
+# Compare both spellings when realpath can resolve the path or its parent.
+path_spellings() {
+  local path canonical resolved
+  path=$(absolute_path "$1" "$2")
+  canonical=$(canonicalize "$path") || return
+  printf '%s\0' "$canonical"
+  if command -v realpath >/dev/null; then
+    if resolved=$(realpath -- "$path" 2>/dev/null); then
+      printf '%s\0' "$resolved"
+    elif resolved=$(realpath -- "${path%/*}/" 2>/dev/null); then
+      printf '%s\0' "${resolved%/}/${path##*/}"
+    fi
   fi
-fi
+}
+
+IFS=: read -r -a notes <<< "${MURMUR_NOTES_PATHS:-}"
+protected=()
+while IFS= read -r -d '' path; do
+  protected+=("$path")
+done < <(
+  path_spellings "$project/MEMORY.md" "$cwd"
+  for note in "${notes[@]}"; do
+    [[ -n $note ]] && path_spellings "$note" "$project"
+  done
+)
+auto_roots=()
+while IFS= read -r -d '' path; do
+  auto_roots+=("$path")
+done < <(path_spellings "$config/projects" "$cwd")
 
 shopt -s nocasematch
-IFS=: read -r -a notes <<< "${MURMUR_NOTES_PATHS:-}"
-for path in "${candidates[@]}"; do
-  case "$path" in
-    */MEMORY.md|*/.claude/projects/*/memory|*/.claude/projects/*/memory/*) deny ;;
-  esac
-  for note in "${notes[@]}"; do
-    [[ -n $note ]] || continue
-    [[ $note == \~/* ]] && note="$HOME/${note:2}"
-    [[ $note == /* ]] || note="$project/$note"
-    note=$(canonicalize "$note") || continue
-    [[ $path == "$note" || $path == "$note/"* ]] && deny
-  done
-done
+while IFS= read -r -d '' file; do
+  while IFS= read -r -d '' path; do
+    for note in "${protected[@]}"; do
+      [[ $path == "$note" || $path == "$note/"* ]] && deny
+    done
+    for root in "${auto_roots[@]}"; do
+      [[ $path == "$root/"* ]] || continue
+      tail=${path:${#root}+1}
+      [[ $tail == */* ]] || continue
+      relative=${tail#*/}
+      [[ $relative == memory || $relative == memory/* ]] && deny
+    done
+  done < <(path_spellings "$file" "$cwd")
+done < <(jq -j '
+  select(.tool_name == "Write" or .tool_name == "Edit" or .tool_name == "NotebookEdit" or .tool_name == "MultiEdit") |
+  .tool_input | .file_path, .notebook_path, (.edits[]? | .file_path) |
+  strings | select(length > 0 and (contains("\u0000") | not)) | ., "\u0000"
+' <<< "$input" 2>/dev/null)
 exit 0

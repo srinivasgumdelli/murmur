@@ -142,23 +142,25 @@ List registered agents.
 {"status": "ok", "messages": 142, "agents": 2, "uptime": "2h30m", "memory": "ok"}
 ```
 
+Memory availability is checked only with `MURMUR_AUTH=required`. A failed memory check returns HTTP 503 and a `degraded` status.
+
 ### Memory
 
-Memory endpoints require `MURMUR_AUTH=required` and a valid key in `X-Murmur-Key` or an `Authorization: Bearer` header. Scopes group notes by workspace, task, or shared project knowledge. The API limits note bodies to 4 KB.
+Memory endpoints require `MURMUR_AUTH=required` and a valid key in `X-Murmur-Key` or an `Authorization: Bearer` header. Scopes group notes by workspace, task, or shared project knowledge. The API limits note bodies to 4096 bytes.
 
 | Endpoint | Behavior |
 |---|---|
 | `POST /memories` | Save a reported entry in a workspace or task scope. The server sets authorship from the key. |
-| `GET /memories` | Search current entries with `q`, `scope`, `tags`, `kind`, `author`, `session_id`, `since`, `include_history`, and `limit`. Repeat `tags` for multiple tags. The response includes items and a total before the limit. |
+| `GET /memories` | Search current entries with `q`, `scope`, `tags`, `kind`, `source`, `author`, `session_id`, `since`, `include_history`, and `limit`. Repeat `tags` for multiple exact tag values. The response includes items and a total before the limit. |
 | `GET /memories/{id}` | Read an entry, with its superseded versions when `include_history=true`. |
 | `POST /memories/{id}/promote` | Copy an entry into shared memory. Requires a lead or admin. |
 | `DELETE /memories/{id}` | Expire an entry. Requires the author, a lead, or an admin. Promoted entries require a lead or admin. |
 | `POST /memories/{id}/purge` | Remove one entry and log the action. Requires an admin. |
 | `GET /memories/stats` | Return scope counts and seven-day activity metrics. `X-Murmur-Session-ID` associates a search with a session for metrics. |
-| `GET /messages/stream?types=memory` | Subscribe to memory events on a dedicated stream. Use `scope` to filter events. Events cover updates made through the local Murmur instance. |
+| `GET /messages/stream?types=memory` | Subscribe to memory events on a dedicated stream. Use `scope` to filter events. Events include the action and cover writes, promotions, expiries, and purges made through the local Murmur instance. |
 | `/mcp` | Streamable HTTP MCP endpoint for `memory_search`, `memory_put`, and `memory_expire`. |
 
-Keyed writes append a new version. Search uses Postgres full-text search or SQLite FTS5, with provenance and recency to break ties. Expiry removes an entry from normal search. Reported entries have a default 90-day TTL, and the reaper removes expired history after 30 days by default.
+The author, a lead, or an admin can supersede a current keyed entry. Promotions track the original scope, so the same key can appear in shared memory from different scopes. Search uses Postgres full-text search or SQLite FTS5, with provenance and recency to break ties. Expiry removes an entry from normal search. Reported entries have a default 90-day TTL, and the reaper removes expired history after 30 days by default.
 
 See the [memory design](docs/specs/2026-11-26-memory-design.md) for the data model, trust rules, and rollout.
 
@@ -251,45 +253,12 @@ MURMUR_MEMORY_SCOPE_CAP=1000      # Current entries per scope
 
 ## Docker Compose
 
-```yaml
-version: "3.8"
-
-services:
-  murmur:
-    build: .
-    ports:
-      - "4444:4444"
-    environment:
-      - BUS_PORT=4444
-      - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: murmur
-      POSTGRES_PASSWORD: murmur
-      POSTGRES_DB: murmur
-    volumes:
-      - murmur-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U murmur"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  murmur-data:
-```
+The [Compose configuration](docker-compose.yml) starts Murmur and Postgres, keeps Postgres data in `murmur-data`, and mounts `murmur-memory-data` at the container's writable home directory. Set `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` to enable memory. Set `MURMUR_MEMORY_STORE=sqlite` to use the mounted volume for memory.
 
 ## Dockerfile
 
 ```dockerfile
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.3-alpine AS builder
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -321,21 +290,21 @@ Agents connect via `http://YOUR_HOST:4444` (from local network) or `http://local
 
 ```bash
 # Send
-curl -X POST http://YOUR_HOST:4444/messages \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","message":"Deployed frontend."}'
 
 # Read
-curl http://YOUR_HOST:4444/messages?after=0&limit=10
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" http://YOUR_HOST:4444/messages?after=0&limit=10
 
 # Long poll (recommended for agents) — after=latest starts at the current tip
-curl http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30
 
 # Stream (dashboard only)
-curl -N http://YOUR_HOST:4444/messages/stream
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -N http://YOUR_HOST:4444/messages/stream
 
 # Register
-curl -X POST http://YOUR_HOST:4444/agents \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"host","role":"host","capabilities":["ssh","deploy"]}'
 ```
@@ -431,22 +400,22 @@ Message bus for inter-session communication. Use curl via Bash tool.
 Bus URL: http://YOUR_HOST:4444
 
 ### Send a message
-curl -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","message":"YOUR MESSAGE","metadata":{}}'
 
 ### Read recent messages
-curl -sf http://YOUR_HOST:4444/messages?after=0&limit=20
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://YOUR_HOST:4444/messages?after=0&limit=20
 
 ### Read new messages since last check
-curl -sf http://YOUR_HOST:4444/messages?after=LAST_ID
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://YOUR_HOST:4444/messages?after=LAST_ID
 
 ### Long poll for messages (recommended for real-time)
 # Server holds request up to 30s, returns instantly on new messages
-curl -sf http://YOUR_HOST:4444/messages/poll?agent=host&after=LAST_ID&timeout=30
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://YOUR_HOST:4444/messages/poll?agent=host&after=LAST_ID&timeout=30
 
 ### Register on startup
-curl -sf -X POST http://YOUR_HOST:4444/agents \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"host","role":"host","capabilities":["ssh","deploy","aws","e2e"]}'
 ```
@@ -461,20 +430,20 @@ Message bus for inter-session communication. Use curl via Bash tool.
 Bus URL: http://BUS_HOST:4444
 
 ### Send a message
-curl -sf -X POST http://BUS_HOST:4444/messages \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","message":"YOUR MESSAGE","metadata":{}}'
 
 ### Read recent messages
-curl -sf http://BUS_HOST:4444/messages?after=0&limit=20
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://BUS_HOST:4444/messages?after=0&limit=20
 
 ### Check for replies (poll pattern)
 LAST_ID=0
-RESP=$(curl -sf http://BUS_HOST:4444/messages?after=$LAST_ID)
+RESP=$(curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://BUS_HOST:4444/messages?after=$LAST_ID)
 # Parse RESP, update LAST_ID from last_id field
 
 ### Register on startup
-curl -sf -X POST http://BUS_HOST:4444/agents \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://BUS_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"sandbox","role":"sandbox","capabilities":["code","git-push"]}'
 ```
@@ -486,20 +455,20 @@ Replace `BUS_HOST` with YOUR_HOST's IP or hostname reachable from the sandbox co
 **Request-response (deploy handoff)**:
 ```bash
 # Sandbox sends
-curl -sf -X POST http://BUS_HOST:4444/messages \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend please","metadata":{"branch":"fix/xxx","services":["frontend"]}}'
 
 # Host reads deploy channel
-curl -sf http://YOUR_HOST:4444/messages?channel=deploy&after=0
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://YOUR_HOST:4444/messages?channel=deploy&after=0
 
 # Host responds
-curl -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","channel":"deploy","message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
 
 # Sandbox checks for reply
-curl -sf http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID
 ```
 
 **Real-time monitoring (host runs a background watcher)**:
@@ -515,12 +484,12 @@ Each new message ends the watcher and triggers one notification. Long poll holds
 **Direct message (1:1)**:
 ```bash
 # Sandbox asks host directly
-curl -sf -X POST http://BUS_HOST:4444/messages \
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","to":"host","message":"Is the RDS still alive?"}'
 
 # Host long-polls for messages addressed to it
-curl -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
+curl -H "X-Murmur-Key: ${MURMUR_KEY:-}" -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 ### Network requirements

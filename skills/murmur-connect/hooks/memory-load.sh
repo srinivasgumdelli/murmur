@@ -4,9 +4,8 @@ source "$(dirname -- "$0")/common.sh"
 memory_configured || exit 0
 input=$(cat)
 session=$(memory_session <<< "$input") || exit 0
-state=$(memory_state "$session") || exit 0
-if [[ ! -e $state ]]; then
-  (umask 077; set -o noclobber; date -u +%Y-%m-%dT%H:%M:%SZ > "$state") 2>/dev/null || true
+if state=$(memory_state "$session"); then
+  memory_prune_state "$state"
 fi
 
 response=$(memory_request --header "X-Murmur-Session-ID: $session" \

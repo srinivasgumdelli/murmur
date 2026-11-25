@@ -32,7 +32,7 @@ else
   MURMUR_URL=http://localhost:4444
 fi
 # Verify it's reachable
-curl -sf $MURMUR_URL/health > /dev/null || echo "WARNING: murmur not reachable at $MURMUR_URL"
+curl -sf "$MURMUR_URL/health" > /dev/null || echo "WARNING: murmur not reachable at $MURMUR_URL"
 ```
 
 Detection order:
@@ -42,7 +42,7 @@ Detection order:
 
 Only ask the user if the health check fails after auto-detection.
 
-If the server uses required authentication, export the provisioned agent key as `MURMUR_KEY`, add `-H "X-Murmur-Key: $MURMUR_KEY"` to the message and agent requests below, and use the agent name bound to that key.
+For a server using required authentication, set the provisioned `MURMUR_KEY` in the environment that launches Claude Code and use the agent name bound to that key. The examples pass the key through a curl header file descriptor, so it stays out of curl's command-line arguments. Leave `MURMUR_KEY` unset for an unauthenticated legacy server.
 
 ### 2. Auto-approve Murmur curl calls
 
@@ -62,7 +62,8 @@ Add to `.claude/settings.json` so long poll and messages don't prompt:
 ### 3. Register (optional)
 
 ```bash
-REGISTER=$(curl -sfL -X POST $MURMUR_URL/agents \
+REGISTER=$(curl -q -sf -X POST "$MURMUR_URL/agents" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"name":"AGENT_NAME","role":"AGENT_ROLE","description":"What you are working on this session","capabilities":["code","git-push"],"groups":["sandbox"]}')
 SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
@@ -97,15 +98,17 @@ cat > "$SCRATCH/murmur-wait.sh" <<'EOF'
 # prints it, records the last id, and exits.
 AGENT=AGENT_NAME
 URL=${MURMUR_URL:-http://localhost:4444}
-AUTH=()
-if [ -n "${MURMUR_KEY:-}" ]; then AUTH=(-H "X-Murmur-Key: $MURMUR_KEY"); fi
+poll() {
+  curl -q -sf --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "$@"
+}
 STATE="$(dirname "$0")/murmur-last-id"
 LAST=$(cat "$STATE" 2>/dev/null)
-[ -z "$LAST" ] && LAST=$(curl -sf "${AUTH[@]}" "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
+[ -z "$LAST" ] && LAST=$(poll "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
 [ -z "$LAST" ] && LAST=latest
 TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
 while true; do
-  if curl -sf "${AUTH[@]}" "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
+  if poll "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
     NEW=$(jq -r '.last_id // 0' "$TMP")
     if [ "$NEW" != "0" ] && [ "$NEW" != "$LAST" ]; then
       LAST=$NEW; echo "$LAST" > "$STATE"
@@ -151,42 +154,48 @@ Notes:
 ### 5. Check who else is online
 
 ```bash
-curl -sfL $MURMUR_URL/agents | jq '.[] | "\(.name) (\(.role)) [\(.status)]"'
+curl -q -sf "$MURMUR_URL/agents" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") | jq '.[] | "\(.name) (\(.role)) [\(.status)]"'
 ```
 
 ## Sending Messages
 
 **Broadcast:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
+curl -q -sf -X POST "$MURMUR_URL/messages" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"sender":"AGENT_NAME","channel":"general","message":"YOUR MESSAGE"}'
 ```
 
 **Direct message:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
+curl -q -sf -X POST "$MURMUR_URL/messages" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"sender":"AGENT_NAME","to":"TARGET","message":"YOUR MESSAGE"}'
 ```
 
 **To a group:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
+curl -q -sf -X POST "$MURMUR_URL/messages" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"sender":"AGENT_NAME","to":"@sandbox","message":"Message for all sandbox agents"}'
 ```
 
 **Reply (threading):**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
+curl -q -sf -X POST "$MURMUR_URL/messages" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"sender":"AGENT_NAME","reply_to":MSG_ID,"message":"YOUR REPLY"}'
 ```
 
 **With metadata:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
+curl -q -sf -X POST "$MURMUR_URL/messages" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"sender":"AGENT_NAME","channel":"deploy","message":"Deploy frontend","metadata":{"action":"deploy","branch":"fix/xxx","services":["frontend"]}}'
 ```
@@ -198,12 +207,14 @@ you — a safety net so you never miss messages even without the long poll.
 
 **Check a message status:**
 ```bash
-curl -sfL $MURMUR_URL/messages/MSG_ID
+curl -q -sf "$MURMUR_URL/messages/MSG_ID" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}")
 ```
 
 **Acknowledge a message:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
+curl -q -sf -X POST "$MURMUR_URL/messages/MSG_ID/ack" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H "Content-Type: application/json" \
   -d '{"agent":"AGENT_NAME"}'
 ```
@@ -255,22 +266,24 @@ The memory API requires the server to run with `MURMUR_AUTH=required`. Use the a
 
 ### Memory tools
 
-Connect a Streamable HTTP MCP client to `$MURMUR_URL/mcp`. For Claude Code, merge this entry into the project's `.mcp.json` and approve the Murmur server when prompted. Use a base URL without a trailing slash. Claude Code expands the environment variable references when it connects.
+Set `MURMUR_KEY` before launching Claude Code. For a remote or container-hosted bus, also set `MURMUR_URL` in that launch environment to the base URL without a trailing slash. Leave it unset to use `http://localhost:4444`. Variable assignments made later in a Bash tool call apply to that shell and do not reach Claude Code's MCP client.
+
+Merge this entry into the project's `.mcp.json` and approve the Murmur server when prompted. See [Claude Code's MCP environment variable documentation](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json).
 
 ```json
 {
   "mcpServers": {
     "murmur": {
       "type": "http",
-      "url": "${MURMUR_URL}/mcp",
+      "url": "${MURMUR_URL:-http://localhost:4444}/mcp",
       "headers": {"X-Murmur-Key": "${MURMUR_KEY}"}
     }
   }
 }
 ```
 
-- Use `memory_search` with `q` and the relevant scopes, such as `workspace:api-server,shared`. Include a task scope for task work.
-- Use `memory_put` with `body`, `scope`, and optionally a stable `key`, `kind`, `tags`, and `session_id`. For the Stop prompt, use `kind: "none"` and omit the key if nothing is worth saving.
+- Use `memory_search` with `q` and the relevant scopes, such as `workspace:api-server,shared`. Use `author: "me"` to find your entries, or add `since`, `include_history`, `session_id`, or `source` to refine the search. Use `search_session_id` to attribute the search in statistics.
+- Use `memory_put` with `scope` and `body`, plus an optional stable `key`, `kind`, `tags`, and `session_id`. Copy the exact `session_id` from a Stop prompt. If nothing is worth saving, set `kind: "none"` and omit the key and body.
 - Use `memory_expire` with the entry `id` to expire a report you own.
 
 ### HTTP fallback
@@ -278,18 +291,20 @@ Connect a Streamable HTTP MCP client to `$MURMUR_URL/mcp`. For Claude Code, merg
 Search current notes in your workspace and shared memory. Add another `scope` parameter to include a task.
 
 ```bash
-curl -fsS -G "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
+curl -q -fsS -G "${MURMUR_URL:-http://localhost:4444}/memories" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   --data-urlencode "scope=workspace:$MURMUR_WORKSPACE,shared" \
   --data-urlencode 'q=test'
 ```
 
-Save knowledge using a stable key when revising the same note. If the Stop hook asks for a write and there is nothing to save, use `kind: "none"`, leave the key empty, and use `Nothing to save` for the body.
+Use a stable key when revising one of your notes. If the Stop hook asks for a write, copy the `session_id` from its prompt. For a session with nothing to save, send the scope, `session_id`, and `kind: "none"`.
 
 ```bash
 jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
-  --arg session_id "${CLAUDE_CODE_SESSION_ID:-}" \
+  --arg session_id "SESSION_ID_FROM_STOP_PROMPT" \
   '{scope: $scope, session_id: $session_id, key: "cmd.test", kind: "command", body: "Run make test."}' |
-curl -fsS "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
+curl -q -fsS "${MURMUR_URL:-http://localhost:4444}/memories" \
+  --header @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") \
   -H 'Content-Type: application/json' --data-binary @-
 ```
 

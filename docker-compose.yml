@@ -8,6 +8,15 @@ services:
     environment:
       - BUS_PORT=4444
       - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
+      - MURMUR_AUTH=${MURMUR_AUTH:-off}
+      - MURMUR_ADMIN_KEY=${MURMUR_ADMIN_KEY:-}
+      - MURMUR_MEMORY_STORE=${MURMUR_MEMORY_STORE:-postgres}
+      - MURMUR_MEMORY_DB=/home/nonroot/murmur-memory.db
+      - MURMUR_MEMORY_TTL_DAYS=${MURMUR_MEMORY_TTL_DAYS:-90}
+      - MURMUR_MEMORY_KEEP_EXPIRED_DAYS=${MURMUR_MEMORY_KEEP_EXPIRED_DAYS:-30}
+      - MURMUR_MEMORY_SCOPE_CAP=${MURMUR_MEMORY_SCOPE_CAP:-1000}
+    volumes:
+      - murmur-memory-data:/home/nonroot
     depends_on:
       db:
         condition: service_healthy
@@ -30,3 +39,4 @@ services:
 
 volumes:
   murmur-data:
+  murmur-memory-data:
