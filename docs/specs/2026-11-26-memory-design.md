@@ -1,6 +1,6 @@
 # Murmur Memory — Design
 
-Status: draft, 2026-11-26
+Status: initial release implemented. This document preserves the original design and rollout plan.
 
 ## Summary
 
@@ -304,7 +304,7 @@ Memory is a murmur feature and runs wherever murmur runs.
 
 ## Observability
 
-- `/health` and `GET /memories/stats` report counts per scope, writes per agent, the share of `none` writes, and searches per session.
+- Public `/health` reports memory store availability. Authenticated `GET /memories/stats` reports counts per scope, writes per agent, the share of `none` writes, and searches per session.
 - A session that ends with only `none` writes over many tasks suggests the gate is being satisfied without real content. Surface it for review.
 
 ## Rollout
@@ -453,3 +453,12 @@ Done when: script tests pass in CI and the manual check is recorded in the PR.
 - The initial defaults are a 4 KiB body, 1,000 current entries per scope, and a 90-day TTL for reports. Review them with deployment data.
 - Claude Code documents startup, resume and compact session-start sources and `additionalContext`, the one-retry stop decision, and the write/edit denial response. Bash's successful post-tool hook has a structured result with interruption status. Disable built-in auto-memory with `autoMemoryEnabled: false`. [Claude Code hooks](https://code.claude.com/docs/en/hooks) and [Claude Code memory](https://code.claude.com/docs/en/memory).
 - The FTS5 spike passed with `CGO_ENABLED=0` and `modernc.org/sqlite` v1.63.0 using WAL, an external-content table, an insert trigger, and a ranked query with `bm25()`. [SQLite driver](https://pkg.go.dev/modernc.org/sqlite@v1.63.0).
+
+## Implementation notes
+
+- Postgres is the default memory store. The SQLite option stores memory in a separate local file while Postgres continues to serve messages, agents, and keys. The SQLite pool setup can be reused when chat storage moves.
+- Both stores serialize version updates and scope-cap decisions. Postgres locks the scope and the previous row. SQLite takes a write lock when it begins the transaction. Both retain a superseded marker so expiring or purging a newer row cannot bring an older version back into normal search.
+- Writes to the shared scope go through promotion. Admin-authored memory uses the reserved author `@murmur-admin`. Workspace and task scopes are search filters available to authenticated clients.
+- Memory SSE uses a dedicated scoped subscription at `/messages/stream?types=memory`. Authenticated search metrics use the optional `X-Murmur-Session-ID` header independently of the entry's `session_id` filter.
+- The Claude Code hooks preserve the original session start time across resume and compaction. Capture recognizes a curated set of successful foreground commands and safe arguments. The stop gate checks scoped history by author and start time. Per-session counts can overlap when the same agent key is used concurrently.
+- The first release includes the three memory tools at `/mcp`. Vectors, transcript harvesting, and failed-then-passed command detection remain later work as described in Rollout.

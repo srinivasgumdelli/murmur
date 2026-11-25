@@ -1,8 +1,8 @@
-# Murmur — Message Bus for Agentic Systems
+# Murmur — Message Bus and Project Memory
 
 ## What
 
-A lightweight message bus for AI agent sessions to communicate reliably. Agents post messages, read messages, and stream updates in real-time. Channels scope conversations. Postgres stores history. SSE delivers messages instantly.
+A lightweight message bus and persistent project memory for AI agent sessions. Messages support live conversations over channels. Memory supports searching for durable project knowledge across sessions.
 
 ## Why
 
@@ -10,9 +10,9 @@ AI agent systems that span multiple sessions (host + sandbox, reviewer + builder
 
 - **File-based handoff**: Race conditions, no history, status confusion, fragile polling
 - **Orchestrator dispatch**: Central bottleneck, no peer-to-peer, sequential only
-- **Shared memory/knowledge graph**: Wrong abstraction (search, not chat)
+- **Search-only handoff**: Agents have to look for updates during an active conversation
 
-Murmur is a message bus. Agents decide what to say and who to talk to. The bus just delivers messages reliably with history.
+Murmur delivers agent messages with history. Its memory API stores searchable notes with verified authorship, scoped version history, and lead or admin promotion.
 
 ## Architecture
 
@@ -33,7 +33,7 @@ Murmur is a message bus. Agents decide what to say and who to talk to. The bus j
                           └───────────┘
 ```
 
-Dockerized. Own Postgres instance, not shared with any project database.
+The Docker deployment includes a dedicated Postgres instance. Messages, agents, and API keys use Postgres. Memory uses that database by default and can use a local SQLite file. The memory service owns permissions, limits, and events across the HTTP and MCP transports. Claude Code hooks use the HTTP API for session context and command capture.
 
 ## Endpoints
 
@@ -139,8 +139,28 @@ List registered agents.
 ### `GET /health`
 
 ```json
-{"status": "ok", "messages": 142, "agents": 2, "uptime": "2h30m"}
+{"status": "ok", "messages": 142, "agents": 2, "uptime": "2h30m", "memory": "ok"}
 ```
+
+### Memory
+
+Memory endpoints require `MURMUR_AUTH=required` and a valid key in `X-Murmur-Key` or an `Authorization: Bearer` header. Scopes group notes by workspace, task, or shared project knowledge. The API limits note bodies to 4 KB.
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /memories` | Save a reported entry in a workspace or task scope. The server sets authorship from the key. |
+| `GET /memories` | Search current entries with `q`, `scope`, `tags`, `kind`, `author`, `session_id`, `since`, `include_history`, and `limit`. Repeat `tags` for multiple tags. The response includes items and a total before the limit. |
+| `GET /memories/{id}` | Read an entry, with its superseded versions when `include_history=true`. |
+| `POST /memories/{id}/promote` | Copy an entry into shared memory. Requires a lead or admin. |
+| `DELETE /memories/{id}` | Expire an entry. Requires the author, a lead, or an admin. Promoted entries require a lead or admin. |
+| `POST /memories/{id}/purge` | Remove one entry and log the action. Requires an admin. |
+| `GET /memories/stats` | Return scope counts and seven-day activity metrics. `X-Murmur-Session-ID` associates a search with a session for metrics. |
+| `GET /messages/stream?types=memory` | Subscribe to memory events on a dedicated stream. Use `scope` to filter events. Events cover updates made through the local Murmur instance. |
+| `/mcp` | Streamable HTTP MCP endpoint for `memory_search`, `memory_put`, and `memory_expire`. |
+
+Keyed writes append a new version. Search uses Postgres full-text search or SQLite FTS5, with provenance and recency to break ties. Expiry removes an entry from normal search. Reported entries have a default 90-day TTL, and the reaper removes expired history after 30 days by default.
+
+See the [memory design](docs/specs/2026-11-26-memory-design.md) for the data model, trust rules, and rollout.
 
 ## Database
 
@@ -222,6 +242,11 @@ BUS_DATABASE_URL=postgres://murmur:murmur@postgres:5432/murmur?sslmode=disable
 MURMUR_ADMIN_KEY=                # Admin key for key management (empty = key management disabled)
 MURMUR_AUTH=off                  # Auth mode: off, optional, required
 MURMUR_MESSAGE_TTL=              # Message retention (e.g. '7 days'). Empty = keep forever
+MURMUR_MEMORY_STORE=postgres     # Memory backend: postgres or sqlite
+MURMUR_MEMORY_DB=./murmur-memory.db # SQLite memory database file
+MURMUR_MEMORY_TTL_DAYS=90         # Default lifetime for reported entries
+MURMUR_MEMORY_KEEP_EXPIRED_DAYS=30 # Expired-history retention
+MURMUR_MEMORY_SCOPE_CAP=1000      # Current entries per scope
 ```
 
 ## Docker Compose
@@ -315,9 +340,9 @@ curl -X POST http://YOUR_HOST:4444/agents \
   -d '{"name":"host","role":"host","capabilities":["ssh","deploy"]}'
 ```
 
-### Future: MCP Server
+### MCP server
 
-Wrap the HTTP API as an MCP server so agents get native tools (`send_message`, `read_messages`, `stream_messages`) instead of curl. HTTP-first is the right MVP. MCP is the upgrade path.
+Clients can connect to `/mcp` for memory tools. Message clients use the existing HTTP endpoints.
 
 ## Message Conventions
 
@@ -392,7 +417,7 @@ Murmur fills this gap.
 
 ## Agent Connection Guide
 
-### How agents connect (no MCP, just curl via Bash tool)
+### How agents connect for messaging
 
 Each Claude Code session has the Bash tool. Agents use `curl` to talk to the bus. Add the following to each session's CLAUDE.md or agent prompt.
 

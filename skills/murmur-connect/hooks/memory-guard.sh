@@ -14,7 +14,7 @@ canonicalize() {
 }
 
 project=${CLAUDE_PROJECT_DIR:-$(jq -r '.cwd // "/"' <<< "$input")}
-[[ $file == "~/"* ]] && file="$HOME/${file:2}"
+[[ $file == \~/* ]] && file="$HOME/${file:2}"
 [[ $file == /* || $file =~ ^[A-Za-z]: ]] || file="$project/$file"
 file=$(canonicalize "$file") || exit 0
 
@@ -42,7 +42,7 @@ for path in "${candidates[@]}"; do
   esac
   for note in "${notes[@]}"; do
     [[ -n $note ]] || continue
-    [[ $note == "~/"* ]] && note="$HOME/${note:2}"
+    [[ $note == \~/* ]] && note="$HOME/${note:2}"
     [[ $note == /* ]] || note="$project/$note"
     note=$(canonicalize "$note") || continue
     [[ $path == "$note" || $path == "$note/"* ]] && deny

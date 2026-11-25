@@ -1,6 +1,6 @@
 # Claude Code memory hooks
 
-Enable `MURMUR_AUTH=required` on the Murmur server and use an agent key provisioned by the server administrator. Set `MURMUR_URL`, `MURMUR_KEY`, and `MURMUR_WORKSPACE` in the environment that launches Claude Code. Give every agent working on the same project the same workspace ID. Set `MURMUR_TASK` to include task memory. Workspace and task IDs use ASCII letters, digits, periods, underscores, and hyphens. Keep the key out of settings files and commits.
+Enable `MURMUR_AUTH=required` on the Murmur server and use an agent key provisioned by the server administrator. Set `MURMUR_URL`, `MURMUR_KEY`, and `MURMUR_WORKSPACE` in the environment that launches Claude Code. Give every agent working on the same project the same workspace ID. Set `MURMUR_TASK` to include task memory. IDs start with an ASCII letter or digit and may also contain `.`, `_`, `@`, `:`, `/`, and `-`, up to 128 characters. Keep the key out of settings files and commits.
 
 1. Copy the complete `skills/murmur-connect` directory to `.claude/skills/murmur-connect` in the project. Install `bash`, `curl`, and `jq`.
 2. Merge the hook entries and `"autoMemoryEnabled": false` from [hooks.json](hooks.json) into the project's `.claude/settings.json`. Keep existing settings and hooks. If you install the scripts elsewhere, adjust the command paths.
