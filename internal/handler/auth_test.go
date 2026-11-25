@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,12 +15,16 @@ func TestAuthIdentity(t *testing.T) {
 		name, mode, key string
 		want            principal
 		status          int
+		lookupErr       error
 	}{
-		{"agent", "required", "valid", principal{agent: "alice", lead: true}, 204},
-		{"admin", "required", "admin-key", principal{admin: true}, 204},
-		{"required invalid", "required", "bogus", principal{}, 401},
-		{"optional invalid", "optional", "bogus", principal{}, 204},
-		{"off", "off", "valid", principal{}, 204},
+		{"agent", "required", "valid", principal{agent: "alice", lead: true}, 204, nil},
+		{"admin", "required", "admin-key", principal{admin: true}, 204, nil},
+		{"required invalid", "required", "bogus", principal{}, 401, nil},
+		{"optional invalid", "optional", "bogus", principal{}, 204, nil},
+		{"before registration", "required", "preregistered", principal{agent: "alice"}, 204, nil},
+		{"required lookup failure", "required", "valid", principal{}, 500, errors.New("database unavailable")},
+		{"optional lookup failure", "optional", "valid", principal{}, 500, errors.New("database unavailable")},
+		{"off", "off", "valid", principal{}, 204, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, err := pgxmock.NewPool()
@@ -31,8 +36,15 @@ func TestAuthIdentity(t *testing.T) {
 				rows := pgxmock.NewRows([]string{"name", "lead"})
 				if tc.key == "valid" {
 					rows.AddRow("alice", true)
+				} else if tc.key == "preregistered" {
+					rows.AddRow("alice", false)
 				}
-				db.ExpectQuery("SELECT a.name").WithArgs(hashKey(tc.key)).WillReturnRows(rows)
+				query := db.ExpectQuery("SELECT k.agent.*LEFT JOIN agents").WithArgs(hashKey(tc.key))
+				if tc.lookupErr != nil {
+					query.WillReturnError(tc.lookupErr)
+				} else {
+					query.WillReturnRows(rows)
+				}
 			}
 			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if got := principalFromContext(r.Context()); got != tc.want {
@@ -69,7 +81,7 @@ func TestKeyCannotMutateAsAnotherAgent(t *testing.T) {
 		{http.MethodPost, "/agents", `{"name":"bob","role":"lead"}`},
 		{http.MethodDelete, "/agents/bob", ""},
 	} {
-		db.ExpectQuery("SELECT a.name").WithArgs(hashKey("alice-key")).
+		db.ExpectQuery("SELECT k.agent").WithArgs(hashKey("alice-key")).
 			WillReturnRows(pgxmock.NewRows([]string{"name", "lead"}).AddRow("alice", false))
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
