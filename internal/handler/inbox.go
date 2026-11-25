@@ -49,7 +49,7 @@ func fetchInbox(ctx context.Context, pool *pgxpool.Pool, agent string) *Inbox {
 
 	if len(ids) > 0 {
 		_, err := pool.Exec(ctx,
-			`UPDATE messages SET status = 'delivered' WHERE id = ANY($1::int[])`,
+			`UPDATE messages SET status = 'delivered' WHERE id = ANY($1::int[]) AND status = 'sent'`,
 			ids,
 		)
 		if err != nil {

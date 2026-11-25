@@ -25,6 +25,7 @@ func TestAuthIdentity(t *testing.T) {
 		{"required lookup failure", "required", "valid", principal{}, 500, errors.New("database unavailable")},
 		{"optional lookup failure", "optional", "valid", principal{}, 500, errors.New("database unavailable")},
 		{"off", "off", "valid", principal{}, 204, nil},
+		{"off admin", "off", "admin-key", principal{admin: true}, 204, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db, err := pgxmock.NewPool()
@@ -74,12 +75,19 @@ func TestKeyCannotMutateAsAnotherAgent(t *testing.T) {
 	defer db.Close()
 	mux := http.NewServeMux()
 	mux.Handle("/messages", Messages(nil))
+	mux.Handle("/messages/", Messages(nil))
+	mux.Handle("/messages/poll", Poll(nil, nil))
+	mux.Handle("/messages/stream", Stream(nil))
 	mux.Handle("/agents", Agents(nil))
 	mux.Handle("/agents/", Agents(nil))
 	for _, tc := range []struct{ method, path, body string }{
 		{http.MethodPost, "/messages", `{"sender":"bob","message":"hello"}`},
 		{http.MethodPost, "/agents", `{"name":"bob","role":"lead"}`},
 		{http.MethodDelete, "/agents/bob", ""},
+		{http.MethodPost, "/agents/bob/heartbeat", ""},
+		{http.MethodPost, "/messages/42/ack", `{"agent":"bob"}`},
+		{http.MethodGet, "/messages/poll?agent=bob", ""},
+		{http.MethodGet, "/messages/stream?agent=bob", ""},
 	} {
 		db.ExpectQuery("SELECT k.agent").WithArgs(hashKey("alice-key")).
 			WillReturnRows(pgxmock.NewRows([]string{"name", "lead"}).AddRow("alice", false))

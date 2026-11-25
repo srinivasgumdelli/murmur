@@ -136,6 +136,24 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
+	// Lock the row before reading the grant or deleting keys. A concurrent
+	// role change and deletion must agree which one happened first.
+	var lead bool
+	err = tx.QueryRow(r.Context(), `SELECT memory_lead FROM agents WHERE name = $1 FOR UPDATE`, name).Scan(&lead)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("look up agent %s for deletion: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if lead && !principalFromContext(r.Context()).admin {
+		http.Error(w, "forbidden: only an admin can delete a memory lead", http.StatusForbidden)
+		return
+	}
+
 	if _, err := tx.Exec(r.Context(), `DELETE FROM api_keys WHERE agent = $1`, name); err != nil {
 		log.Printf("delete api_keys for agent %s: %v", name, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -149,7 +167,8 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		name,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if err != nil {
-		http.Error(w, "agent not found", http.StatusNotFound)
+		log.Printf("delete agent %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -171,6 +190,9 @@ type heartbeatResponse struct {
 }
 
 func heartbeat(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name string) {
+	if !checkAgent(w, r, name) {
+		return
+	}
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
 		`UPDATE agents SET status = 'online', last_seen = now()

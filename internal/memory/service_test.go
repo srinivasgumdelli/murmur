@@ -14,7 +14,7 @@ type fakeStore struct {
 	put          func(Memory, int, Actor) (Memory, bool, error)
 	search       func(Query, time.Time) (Result, error)
 	recordSearch func(Actor, string, time.Time) error
-	promote      func(int, string, time.Time, int) (Memory, error)
+	promote      func(int, string, time.Time, int) (Memory, bool, error)
 	expire       func(int, Actor, time.Time) (Memory, error)
 	purge        func(int) (Memory, error)
 }
@@ -31,7 +31,7 @@ func (f fakeStore) RecordSearch(_ context.Context, actor Actor, sessionID string
 	return f.recordSearch(actor, sessionID, at)
 }
 
-func (f fakeStore) Promote(_ context.Context, id int, by string, at time.Time, cap int) (Memory, error) {
+func (f fakeStore) Promote(_ context.Context, id int, by string, at time.Time, cap int) (Memory, bool, error) {
 	return f.promote(id, by, at, cap)
 }
 
@@ -130,11 +130,11 @@ func TestServiceAccess(t *testing.T) {
 
 	var published []Event
 	service = NewService(fakeStore{
-		promote: func(id int, by string, _ time.Time, _ int) (Memory, error) {
+		promote: func(id int, by string, _ time.Time, _ int) (Memory, bool, error) {
 			if id != 1 || (by != "lead" && by != admin.Name()) {
 				t.Fatalf("promote via store got id %d and identity %q", id, by)
 			}
-			return Memory{ID: 2, Provenance: Promoted, PromotedBy: by}, nil
+			return Memory{ID: 2, Provenance: Promoted, PromotedBy: by}, true, nil
 		},
 		expire: func(id int, actor Actor, _ time.Time) (Memory, error) {
 			m := Memory{ID: id, Author: worker.Agent, Provenance: Promoted}
@@ -179,11 +179,23 @@ func TestRepeatedCaptureDoesNotPublishAgain(t *testing.T) {
 			return m, false, nil
 		},
 	}, Config{AuthMode: "required", Publish: func(event Event) { t.Errorf("duplicate event: %+v", event) }})
-	stored, err := service.Put(t.Context(), Actor{Agent: "worker"}, PutRequest{
+	stored, created, err := service.PutWithResult(t.Context(), Actor{Agent: "worker"}, PutRequest{
 		Scope: "workspace:api", Key: "cmd.test", Kind: KindCommand, Body: "go test", Source: SourceCapture,
 	})
-	if err != nil || stored.ID != 1 {
-		t.Fatalf("put = %+v, err = %v", stored, err)
+	if err != nil || created || stored.ID != 1 {
+		t.Fatalf("put = %+v, created = %v, err = %v", stored, created, err)
+	}
+}
+
+func TestRepeatedPromotionDoesNotPublishAgain(t *testing.T) {
+	service := NewService(fakeStore{
+		promote: func(int, string, time.Time, int) (Memory, bool, error) {
+			return Memory{ID: 2, Provenance: Promoted}, false, nil
+		},
+	}, Config{AuthMode: "required", Publish: func(event Event) { t.Errorf("duplicate event: %+v", event) }})
+	stored, created, err := service.PromoteWithResult(t.Context(), Actor{Agent: "lead", Lead: true}, 1)
+	if err != nil || created || stored.ID != 2 {
+		t.Fatalf("promote = %+v, created = %v, err = %v", stored, created, err)
 	}
 }
 
