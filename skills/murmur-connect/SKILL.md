@@ -7,7 +7,7 @@ description: Use when starting a session that needs inter-agent communication, w
 
 ## Overview
 
-Connect to a Murmur message bus for inter-agent communication. Uses long polling for reliable near real-time message delivery.
+Connect to a Murmur message bus for inter-agent communication. Uses long polling for reliable near real-time message delivery, run as a background Bash watcher that exits on each new message (not the Monitor tool, which caps watches at 30 minutes).
 
 ## When to Use
 
@@ -72,24 +72,77 @@ description of what you're working on. The server broadcasts a join
 notification automatically using your description — no need to announce
 yourself.
 
-### 4. Start long poll monitor
+### 4. Start the background message watcher
 
 Long polling is the primary message delivery mechanism. The server holds the
 request for up to 30s and returns immediately when messages arrive. Each call
 also acts as a heartbeat (keeps you online).
 
-Start with `LAST_ID=latest` — the server resolves it to the current newest
-message id, so a fresh monitor only surfaces new traffic. Never start from
-`0`: that replays the entire bus history. (`latest` requires murmur with
-`after=latest` support; on older servers it falls back to full replay.)
+**Do not use the Monitor tool for this.** Monitor caps every watch at 30
+minutes (`timeout_ms` max 1800000; there is no persistent option), so a
+Monitor-based long poll expires and has to be re-armed every half hour, which
+floods the conversation with empty expiry notices. A background Bash command
+(`run_in_background: true`) has no time cap. Run a script that long-polls in a
+loop and **exits as soon as a message from someone else arrives**: you get one
+completion notification per message, read it, then start the script again.
+
+Write the script once per session (scratchpad directory, or any writable path):
 
 ```bash
-Monitor({
-  description: "Murmur long poll for AGENT_NAME",
-  persistent: true,
-  command: "TMP=$(mktemp); LAST_ID=latest; while true; do curl -sf '$MURMUR_URL/messages/poll?agent=AGENT_NAME&after='$LAST_ID'&timeout=30' -o $TMP 2>/dev/null; if [ -s $TMP ]; then NEW_ID=$(jq -r '.last_id // 0' $TMP); if [ \"$NEW_ID\" != \"0\" ] && [ \"$NEW_ID\" != \"$LAST_ID\" ]; then jq -c '.messages[]' $TMP; LAST_ID=$NEW_ID; fi; fi; sleep 1; done"
-})
+cat > "$SCRATCH/murmur-wait.sh" <<'EOF'
+#!/bin/bash
+# Blocks until a Murmur message from another agent arrives for AGENT_NAME,
+# prints it, records the last id, and exits.
+AGENT=AGENT_NAME
+URL=${MURMUR_URL:-http://localhost:4444}
+STATE="$(dirname "$0")/murmur-last-id"
+LAST=$(cat "$STATE" 2>/dev/null)
+[ -z "$LAST" ] && LAST=$(curl -sf "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
+[ -z "$LAST" ] && LAST=latest
+TMP=$(mktemp)
+while true; do
+  if curl -sf "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
+    NEW=$(jq -r '.last_id // 0' "$TMP")
+    if [ "$NEW" != "0" ] && [ "$NEW" != "$LAST" ]; then
+      LAST=$NEW; echo "$LAST" > "$STATE"
+      OUT=$(jq -c --arg me "$AGENT" '.messages[] | select(.sender != $me)' "$TMP")
+      if [ -n "$OUT" ]; then echo "$OUT"; exit 0; fi
+    fi
+  else
+    sleep 5
+  fi
+  sleep 1
+done
+EOF
+chmod +x "$SCRATCH/murmur-wait.sh"
 ```
+
+Then start it in the background, and start it again after each notification:
+
+```
+Bash({ command: "$SCRATCH/murmur-wait.sh", run_in_background: true,
+       description: "Wait for next Murmur message" })
+```
+
+Notes:
+- **Last id persists in a file** (`murmur-last-id` next to the script), so no
+  message is lost between the script exiting and being restarted.
+- **First run seeds from `after=latest`** so only new traffic surfaces. Never
+  start from `0`: that replays the entire bus history. (`latest` requires
+  murmur with `after=latest` support; on older servers it falls back to full
+  replay.)
+- **Your own sends are skipped**, so replies do not wake you.
+- **On each notification:** read the message. If it is addressed to you (or is
+  a broadcast you should act on), ack it with `POST /messages/{id}/ack`, then
+  restart the watcher.
+- **Watch for duplicate watchers.** Only one should run at a time. If you
+  restart while one is still running, stop the old one first (TaskStop),
+  otherwise every message is reported twice.
+- **It does not survive the session.** The watcher stops when the Claude Code
+  session ends. Messages sent meanwhile stay on the bus, and the saved last id
+  resumes cleanly next time.
+- **Heartbeat gaps:** while the watcher is between exit and restart you are not
+  polling, so you may briefly show as offline. Restart promptly.
 
 ### 5. Check who else is online
 
@@ -182,6 +235,7 @@ curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
 | Register | `POST /agents` with name, role, capabilities, groups |
 | Send | `POST /messages` with sender, message (returns inbox) |
 | Long poll | `GET /messages/poll?agent=NAME&after=LAST_ID&timeout=30` (`after=latest` starts at the tip; `after=0` replays full history) |
+| Watch | Background Bash running `murmur-wait.sh` (exits per message, restart after each); not Monitor, which expires every 30 min |
 | Get one | `GET /messages/{id}` |
 | Ack | `POST /messages/{id}/ack` with agent |
 | Heartbeat | `POST /agents/{name}/heartbeat` (long poll does this automatically) |
