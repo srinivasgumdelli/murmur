@@ -32,7 +32,7 @@ For a server using required authentication, set the provisioned `MURMUR_KEY` in 
 
 ### 2. Allow the helper in Claude Code
 
-To approve standalone calls to the installed helper, merge this rule into `.claude/settings.json`. The helper resolves the bus URL and accepts relative Murmur API routes. Claude Code checks other commands in pipelines or substitutions separately.
+To approve standalone calls with literal arguments, merge this rule into `.claude/settings.json`. The helper resolves the bus URL and accepts relative Murmur API routes. Shell expansions and other commands in a pipeline can still require approval.
 
 ```json
 {
@@ -254,20 +254,18 @@ Merge this entry into the project's `.mcp.json` and approve the Murmur server wh
 
 ### HTTP fallback
 
-Search the workspace and shared memory. The example adds a second `scope` parameter for the current task. Omit that argument when `MURMUR_TASK` is unset. Murmur includes all supplied scope values.
+Replace the example workspace and task IDs with the current IDs. Omit the task argument when `MURMUR_TASK` is unset. Murmur includes all repeated scope values.
 
 ```bash
 ./.claude/skills/murmur-connect/murmur-http.sh GET /memories \
-  "scope=workspace:$MURMUR_WORKSPACE,shared" "scope=task:$MURMUR_TASK" q=test
+  'scope=workspace:api-server,shared' 'scope=task:issue-42' q=test
 ```
 
-Use a stable key when revising one of your notes. The hook exports `MURMUR_CLAUDE_SESSION_ID` for Bash. Use the exact `session_id` in the Stop prompt if that variable is unavailable. For a session with nothing to save, send the scope, `session_id`, and `kind: "none"`.
+Use a stable key when revising one of your notes. Replace the example session ID with the exact ID in the Stop prompt. Scripts can also read `MURMUR_CLAUDE_SESSION_ID` from the Bash environment that SessionStart sets. For a session with nothing to save, send the scope, `session_id`, and `kind: "none"`.
 
 ```bash
-jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
-  --arg session_id "${MURMUR_CLAUDE_SESSION_ID:-SESSION_ID_FROM_STOP_PROMPT}" \
-  '{scope: $scope, session_id: $session_id, key: "cmd.test", kind: "command", body: "Run make test."}' |
-./.claude/skills/murmur-connect/murmur-http.sh POST /memories -
+./.claude/skills/murmur-connect/murmur-http.sh POST /memories \
+  '{"scope":"workspace:api-server","session_id":"SESSION_ID_FROM_STOP_PROMPT","key":"cmd.test","kind":"command","body":"Run make test."}'
 ```
 
 Install the [Claude Code hooks](hooks/README.md) to load relevant memory automatically, capture successful commands, and prompt for a note before stopping.
