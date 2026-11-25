@@ -115,6 +115,10 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		find(t, store, memory.Query{Text: "How do I run the tests?"}, now, 1)
 		find(t, store, memory.Query{Text: "How do I run the integration tests?"}, now, 0)
 		find(t, store, memory.Query{Text: "How do I?"}, now, 0)
+		put(t, store, entry("workspace:app", "", "Deploy staging with make deploy.", now), 2)
+		find(t, store, memory.Query{Text: "how to deploy from staging before noon"}, now, 0)
+		find(t, store, memory.Query{Text: "how to deploy from staging, after that again"}, now, 1)
+		find(t, store, memory.Query{Text: "what about deploying from staging, once more?"}, now, 1)
 	})
 
 	t.Run("none markers skip the scope cap", func(t *testing.T) {
