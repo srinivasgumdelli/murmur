@@ -16,8 +16,10 @@ const schema = `
 CREATE TABLE IF NOT EXISTS memories (
     id SERIAL PRIMARY KEY,
     scope TEXT NOT NULL,
+    origin_scope TEXT NOT NULL DEFAULT '',
     key TEXT,
     kind TEXT NOT NULL DEFAULT 'note',
+    source TEXT NOT NULL DEFAULT 'manual',
     body TEXT NOT NULL,
     tags TEXT[] NOT NULL DEFAULT '{}',
     author TEXT NOT NULL,
@@ -30,7 +32,9 @@ CREATE TABLE IF NOT EXISTS memories (
     expires_at TIMESTAMPTZ,
     body_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', body)) STORED
 );
-CREATE INDEX IF NOT EXISTS idx_memories_scope_key ON memories (scope, key, id);
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS origin_scope TEXT NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
+CREATE INDEX IF NOT EXISTS idx_memories_origin_key ON memories (scope, key, origin_scope, id);
 CREATE INDEX IF NOT EXISTS idx_memories_author_created ON memories (author, created_at);
 CREATE INDEX IF NOT EXISTS idx_memories_tsv ON memories USING GIN (body_tsv);
 CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories (expires_at) WHERE expires_at IS NOT NULL;
@@ -47,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_searches_day ON memory_searches (search_da
 `
 
 const columns = `
-id, scope, COALESCE(key, ''), kind, body, tags, author,
+id, scope, origin_scope, COALESCE(key, ''), kind, source, body, tags, author,
 COALESCE(session_id, ''), provenance, COALESCE(promoted_by, ''),
 supersedes, created_at, expires_at`
 
@@ -72,7 +76,7 @@ type scanner interface {
 
 func scanMemory(row scanner, tail ...any) (memory.Memory, error) {
 	var m memory.Memory
-	fields := []any{&m.ID, &m.Scope, &m.Key, &m.Kind, &m.Body, &m.Tags, &m.Author,
+	fields := []any{&m.ID, &m.Scope, &m.OriginScope, &m.Key, &m.Kind, &m.Source, &m.Body, &m.Tags, &m.Author,
 		&m.SessionID, &m.Provenance, &m.PromotedBy, &m.Supersedes, &m.CreatedAt, &m.ExpiresAt}
 	err := row.Scan(append(fields, tail...)...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -88,66 +92,73 @@ func lockScope(ctx context.Context, tx pgx.Tx, scope string) error {
 	return err
 }
 
-func (s *Store) Put(ctx context.Context, m memory.Memory, scopeCap int) (memory.Memory, error) {
+func (s *Store) Put(ctx context.Context, m memory.Memory, scopeCap int, actor memory.Actor) (memory.Memory, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := lockScope(ctx, tx, m.Scope); err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
 	}
-	stored, err := put(ctx, tx, m, scopeCap)
+	stored, created, err := put(ctx, tx, m, scopeCap, actor)
 	if err != nil {
-		return memory.Memory{}, err
+		return memory.Memory{}, false, err
 	}
-	return stored, tx.Commit(ctx)
+	return stored, created, tx.Commit(ctx)
 }
 
-func put(ctx context.Context, tx pgx.Tx, m memory.Memory, scopeCap int) (memory.Memory, error) {
+func put(ctx context.Context, tx pgx.Tx, m memory.Memory, scopeCap int, actor memory.Actor) (memory.Memory, bool, error) {
 	var replacesCurrent bool
 	m.Supersedes = nil
 	if m.Key != "" {
-		var previous int
-		err := tx.QueryRow(ctx, `
-			SELECT id, superseded_at IS NULL AND (expires_at IS NULL OR expires_at > $3)
-			FROM memories WHERE scope=$1 AND key=$2 ORDER BY id DESC LIMIT 1 FOR UPDATE`,
-			m.Scope, m.Key, m.CreatedAt).Scan(&previous, &replacesCurrent)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return memory.Memory{}, err
+		previous, err := scanMemory(tx.QueryRow(ctx, "SELECT "+columns+`,
+			superseded_at IS NULL AND (expires_at IS NULL OR expires_at > $4)
+			FROM memories WHERE scope=$1 AND key=$2 AND origin_scope=$3
+			ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+			m.Scope, m.Key, m.OriginScope, m.CreatedAt), &replacesCurrent)
+		if err != nil && !errors.Is(err, memory.ErrNotFound) {
+			return memory.Memory{}, false, err
 		}
 		if err == nil {
-			m.Supersedes = &previous
+			if replacesCurrent && !memory.CanExpire(previous, actor) {
+				return memory.Memory{}, false, memory.ErrForbidden
+			}
+			if replacesCurrent && memory.SameCapture(previous, m) {
+				return previous, false, nil
+			}
+			m.Supersedes = &previous.ID
 		}
 	}
-	if scopeCap > 0 && m.Kind != memory.KindNone && !replacesCurrent {
+	if scopeCap > 0 && !replacesCurrent {
 		var current int
 		err := tx.QueryRow(ctx, `
 			SELECT count(*) FROM memories
-			WHERE scope=$1 AND kind<>'none' AND superseded_at IS NULL
+			WHERE scope=$1 AND superseded_at IS NULL
 			AND (expires_at IS NULL OR expires_at > $2)`, m.Scope, m.CreatedAt).Scan(&current)
 		if err != nil {
-			return memory.Memory{}, err
+			return memory.Memory{}, false, err
 		}
 		if current >= scopeCap {
-			return memory.Memory{}, memory.ErrScopeFull
+			return memory.Memory{}, false, memory.ErrScopeFull
 		}
 	}
 	if m.Supersedes != nil {
 		if _, err := tx.Exec(ctx, `
 			UPDATE memories SET superseded_at=COALESCE(superseded_at,$2) WHERE id=$1`,
 			*m.Supersedes, m.CreatedAt); err != nil {
-			return memory.Memory{}, err
+			return memory.Memory{}, false, err
 		}
 	}
 	if m.Tags == nil {
 		m.Tags = []string{}
 	}
-	return scanMemory(tx.QueryRow(ctx, `
-		INSERT INTO memories (scope,key,kind,body,tags,author,session_id,provenance,promoted_by,supersedes,created_at,expires_at)
-		VALUES ($1,NULLIF($2,''),$3,$4,$5,$6,NULLIF($7,''),$8,NULLIF($9,''),$10,$11,$12)
-		RETURNING `+columns, m.Scope, m.Key, m.Kind, m.Body, m.Tags, m.Author, m.SessionID,
+	stored, err := scanMemory(tx.QueryRow(ctx, `
+		INSERT INTO memories (scope,origin_scope,key,kind,source,body,tags,author,session_id,provenance,promoted_by,supersedes,created_at,expires_at)
+		VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,NULLIF($9,''),$10,NULLIF($11,''),$12,$13,$14)
+		RETURNING `+columns, m.Scope, m.OriginScope, m.Key, m.Kind, m.Source, m.Body, m.Tags, m.Author, m.SessionID,
 		m.Provenance, m.PromotedBy, m.Supersedes, m.CreatedAt, m.ExpiresAt))
+	return stored, err == nil, err
 }
 
 func (s *Store) Get(ctx context.Context, id int, history bool) ([]memory.Memory, error) {
@@ -204,6 +215,9 @@ func (s *Store) Search(ctx context.Context, q memory.Query, at time.Time) (memor
 		clauses = append(clauses, "kind <> 'none'")
 	default:
 		clauses = append(clauses, "kind = "+addArg(q.Kind))
+	}
+	if q.Source != "" {
+		clauses = append(clauses, "source = "+addArg(q.Source))
 	}
 	if len(q.Scopes) > 0 {
 		clauses = append(clauses, "scope = ANY("+addArg(q.Scopes)+")")
@@ -268,12 +282,12 @@ func (s *Store) Promote(ctx context.Context, id int, by string, at time.Time, sc
 	if m.Kind == memory.KindNone || m.Provenance == memory.Promoted {
 		return memory.Memory{}, fmt.Errorf("%w: only reported notes can be promoted", memory.ErrInvalid)
 	}
-	m.Scope = memory.SharedScope
+	m.OriginScope, m.Scope = m.Scope, memory.SharedScope
 	m.Provenance = memory.Promoted
 	m.PromotedBy = by
 	m.CreatedAt = at
 	m.ExpiresAt = nil
-	stored, err := put(ctx, tx, m, scopeCap)
+	stored, _, err := put(ctx, tx, m, scopeCap, memory.Actor{Lead: true})
 	if err != nil {
 		return memory.Memory{}, err
 	}
@@ -301,19 +315,17 @@ func (s *Store) Expire(ctx context.Context, id int, actor memory.Actor, at time.
 	return m, tx.Commit(ctx)
 }
 
-func (s *Store) Purge(ctx context.Context, id int) error {
-	tag, err := s.pool.Exec(ctx, "DELETE FROM memories WHERE id=$1", id)
-	if err == nil && tag.RowsAffected() == 0 {
-		return memory.ErrNotFound
-	}
-	return err
+func (s *Store) Purge(ctx context.Context, id int) (memory.Memory, error) {
+	return scanMemory(s.pool.QueryRow(ctx, "DELETE FROM memories WHERE id=$1 RETURNING "+columns, id))
 }
 
-func (s *Store) Reap(ctx context.Context, before time.Time) error {
-	if _, err := s.pool.Exec(ctx, "DELETE FROM memories WHERE expires_at <= $1", before); err != nil {
+func (s *Store) Reap(ctx context.Context, at time.Time, retention time.Duration) error {
+	if _, err := s.pool.Exec(ctx, `
+		DELETE FROM memories WHERE expires_at <= $1 OR (provenance = $2 AND superseded_at <= $1)`,
+		at.Add(-retention), memory.Promoted); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, "DELETE FROM memory_searches WHERE search_day < $1::date", time.Now().UTC().Add(-memory.StatsWindow).Format(time.DateOnly))
+	_, err := s.pool.Exec(ctx, "DELETE FROM memory_searches WHERE search_day < $1::date", at.UTC().Add(-memory.StatsWindow).Format(time.DateOnly))
 	return err
 }
 
@@ -343,7 +355,7 @@ func (s *Store) Stats(ctx context.Context, at time.Time) (memory.Stats, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 	scopeRows, err := tx.Query(ctx, `
 		SELECT scope, count(*) FROM memories WHERE superseded_at IS NULL
-		AND (expires_at IS NULL OR expires_at > $1) AND kind <> 'none' GROUP BY scope`, at)
+		AND (expires_at IS NULL OR expires_at > $1) GROUP BY scope`, at)
 	if err != nil {
 		return stats, err
 	}

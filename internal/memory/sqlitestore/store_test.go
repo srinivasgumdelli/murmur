@@ -29,10 +29,10 @@ func TestFTSLiteralQueries(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	at := time.Now().UTC()
-	_, err = s.Put(ctx, memory.Memory{
+	_, _, err = s.Put(ctx, memory.Memory{
 		Scope: "workspace:sample", Body: "Run tests using make test before changes.", Author: "worker",
-		Kind: memory.KindCommand, Provenance: memory.Reported, CreatedAt: at,
-	}, 10)
+		Kind: memory.KindCommand, Source: memory.SourceManual, Provenance: memory.Reported, CreatedAt: at,
+	}, 10, memory.Actor{Agent: "worker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +50,36 @@ func TestFTSLiteralQueries(t *testing.T) {
 	}
 }
 
+func TestOpenPreservesPreviousSchemaEntries(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "memory.db")
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Recreate the layout from before the origin and source columns.
+	_, err = s.db.ExecContext(ctx, `
+		DROP INDEX idx_memories_origin_key;
+		ALTER TABLE memories DROP COLUMN origin_scope;
+		ALTER TABLE memories DROP COLUMN source;
+		INSERT INTO memories (scope, key, kind, body, author, provenance, created_at) VALUES
+			('workspace:api', 'cmd.test', 'command', 'go test ./...', 'worker', 'reported', 0);
+	`)
+	closeErr := s.Close()
+	if err != nil || closeErr != nil {
+		t.Fatalf("prepare legacy database: %v, close: %v", err, closeErr)
+	}
+	s, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	got, err := s.Search(ctx, memory.Query{Text: "test", Source: memory.SourceManual}, time.Now())
+	if err != nil || got.Total != 1 || got.Items[0].Key != "cmd.test" || got.Items[0].OriginScope != "" {
+		t.Fatalf("legacy notes = %+v, err = %v", got, err)
+	}
+}
+
 func TestSearchIndexAfterPurgeAndReopen(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "memory #1?.db")
@@ -58,22 +88,23 @@ func TestSearchIndexAfterPurgeAndReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Now().UTC()
-	old, err := s.Put(ctx, memory.Memory{
+	actor := memory.Actor{Agent: "worker"}
+	old, _, err := s.Put(ctx, memory.Memory{
 		Scope: "workspace:sample", Key: "cmd.test", Body: "previous instruction", Author: "worker",
-		Kind: memory.KindCommand, Provenance: memory.Reported, CreatedAt: at,
-	}, 1)
+		Kind: memory.KindCommand, Source: memory.SourceManual, Provenance: memory.Reported, CreatedAt: at,
+	}, 1, actor)
 	if err != nil {
 		_ = s.Close()
 		t.Fatal(err)
 	}
 	replacement := old
 	replacement.Body = "new instruction"
-	newer, err := s.Put(ctx, replacement, 1)
+	newer, _, err := s.Put(ctx, replacement, 1, actor)
 	if err != nil {
 		_ = s.Close()
 		t.Fatal(err)
 	}
-	if err := s.Purge(ctx, newer.ID); err != nil {
+	if _, err := s.Purge(ctx, newer.ID); err != nil {
 		_ = s.Close()
 		t.Fatal(err)
 	}
