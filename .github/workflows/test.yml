@@ -2,6 +2,7 @@ name: Test
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
@@ -9,6 +10,7 @@ permissions:
 
 jobs:
   test:
+    name: ${{ matrix.backend == 'postgres' && 'test' || 'SQLite' }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,4 +40,6 @@ jobs:
       - if: matrix.backend == 'postgres'
         run: go test -race ./...
       - if: matrix.backend == 'sqlite'
-        run: CGO_ENABLED=0 go test ./internal/memory/sqlitestore
+        run: |
+          CGO_ENABLED=0 go test ./internal/memory/sqlitestore
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/murmur" ./cmd/murmur

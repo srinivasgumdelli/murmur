@@ -15,6 +15,8 @@ import (
 	"github.com/srinivasgumdelli/murmur/internal/memory"
 )
 
+var errMemoryRequestTooLarge = errors.New("memory request exceeds 65536 bytes")
+
 func memoryActor(r *http.Request) memory.Actor {
 	return memoryActorFromContext(r.Context())
 }
@@ -46,11 +48,11 @@ func InstallMemoryRoutes(mux *http.ServeMux, svc *memory.Service, authMode strin
 		if err := decoder.Decode(new(any)); err != io.EOF {
 			return memoryDecodeError(err)
 		}
-		entry, err := svc.Put(r.Context(), memoryActor(r), req)
-		return memoryJSON(w, http.StatusCreated, entry, err)
+		entry, created, err := svc.PutWithResult(r.Context(), memoryActor(r), req)
+		return memoryWriteJSON(w, entry, created, err)
 	})
 	register("GET /memories", func(w http.ResponseWriter, r *http.Request) error {
-		q, err := parseMemoryQuery(r.URL.Query())
+		q, err := parseMemoryQuery(r.URL)
 		if err != nil {
 			return err
 		}
@@ -88,8 +90,8 @@ func InstallMemoryRoutes(mux *http.ServeMux, svc *memory.Service, authMode strin
 		if err != nil {
 			return err
 		}
-		entry, err := svc.Promote(r.Context(), memoryActor(r), id)
-		return memoryJSON(w, http.StatusCreated, entry, err)
+		entry, created, err := svc.PromoteWithResult(r.Context(), memoryActor(r), id)
+		return memoryWriteJSON(w, entry, created, err)
 	})
 	register("DELETE /memories/{id}", func(w http.ResponseWriter, r *http.Request) error {
 		id, err := memoryID(r)
@@ -115,9 +117,13 @@ func memoryID(r *http.Request) (int, error) {
 	return id, nil
 }
 
-func parseMemoryQuery(values url.Values) (q memory.Query, err error) {
+func parseMemoryQuery(target *url.URL) (q memory.Query, err error) {
+	values := target.Query()
 	q.Scopes = splitQuery(values["scope"])
-	q.Tags = values["tags"]
+	q.Tags, err = memoryTags(target.RawQuery)
+	if err != nil {
+		return q, err
+	}
 	q.Text = values.Get("q")
 	q.Author = values.Get("author")
 	q.Kind = memory.Kind(values.Get("kind"))
@@ -140,6 +146,26 @@ func parseMemoryQuery(values url.Values) (q memory.Query, err error) {
 		}
 	}
 	return q, nil
+}
+
+// Literal commas delimit tags; percent-encoded commas remain part of a tag.
+func memoryTags(rawQuery string) ([]string, error) {
+	var tags []string
+	for _, parameter := range strings.Split(rawQuery, "&") {
+		name, value, _ := strings.Cut(parameter, "=")
+		decodedName, err := url.QueryUnescape(name)
+		if err != nil || decodedName != "tags" {
+			continue
+		}
+		for _, rawTag := range strings.Split(value, ",") {
+			tag, err := url.QueryUnescape(rawTag)
+			if err != nil {
+				return nil, memory.ErrInvalid
+			}
+			tags = append(tags, tag)
+		}
+	}
+	return tags, nil
 }
 
 func queryBool(values url.Values, name string) (bool, error) {
@@ -166,6 +192,14 @@ func splitQuery(values []string) []string {
 	return out
 }
 
+func memoryWriteJSON(w http.ResponseWriter, entry memory.Memory, created bool, err error) error {
+	status := http.StatusOK
+	if created {
+		status = http.StatusCreated
+	}
+	return memoryJSON(w, status, entry, err)
+}
+
 func memoryJSON(w http.ResponseWriter, status int, body any, err error) error {
 	if err != nil {
 		return err
@@ -183,7 +217,7 @@ func memoryJSON(w http.ResponseWriter, status int, body any, err error) error {
 func memoryDecodeError(err error) error {
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
-		return memory.ErrBodyTooLarge
+		return errMemoryRequestTooLarge
 	}
 	return memory.ErrInvalid
 }
@@ -191,7 +225,7 @@ func memoryDecodeError(err error) error {
 func memoryError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, memory.ErrBodyTooLarge):
+	case errors.Is(err, memory.ErrBodyTooLarge), errors.Is(err, errMemoryRequestTooLarge):
 		status = http.StatusRequestEntityTooLarge
 	case errors.Is(err, memory.ErrInvalid):
 		status = http.StatusBadRequest
