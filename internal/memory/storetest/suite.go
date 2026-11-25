@@ -115,6 +115,24 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		find(t, store, memory.Query{Text: "How do I run the tests?"}, now, 1)
 		find(t, store, memory.Query{Text: "How do I run the integration tests?"}, now, 0)
 		find(t, store, memory.Query{Text: "How do I?"}, now, 0)
+		put(t, store, entry("workspace:app", "", "Deploy staging with make deploy.", now), 2)
+		find(t, store, memory.Query{Text: "how to deploy from staging before noon"}, now, 0)
+		find(t, store, memory.Query{Text: "how to deploy from staging, after that again"}, now, 1)
+		find(t, store, memory.Query{Text: "what about deploying from staging, once more?"}, now, 1)
+	})
+
+	t.Run("none markers skip the scope cap", func(t *testing.T) {
+		ctx := t.Context()
+		store := newStore(t)
+		put(t, store, entry("workspace:cap", "", "only note", now), 1)
+		for i := range 3 {
+			none := entry("workspace:cap", "", "", now.Add(time.Duration(i+1)*time.Second))
+			none.Kind = memory.KindNone
+			put(t, store, none, 1)
+		}
+		if _, _, err := store.Put(ctx, entry("workspace:cap", "", "second note", now.Add(5*time.Second)), 1, memory.Actor{Agent: "worker"}); !errors.Is(err, memory.ErrScopeFull) {
+			t.Fatalf("over-cap note: %v, want scope full", err)
+		}
 	})
 
 	t.Run("filters and retention", func(t *testing.T) {
@@ -130,9 +148,6 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		none := entry(note.Scope, "", "", now.Add(time.Second))
 		none.Kind = memory.KindNone
 		put(t, store, none, 2)
-		if _, _, err := store.Put(ctx, none, 2, memory.Actor{Agent: none.Author}); !errors.Is(err, memory.ErrScopeFull) {
-			t.Fatalf("over-cap marker: %v", err)
-		}
 
 		find(t, store, memory.Query{Limit: 1}, now.Add(time.Minute), 1)
 		find(t, store, memory.Query{Kind: memory.KindAny}, now.Add(time.Minute), 2)
@@ -240,6 +255,7 @@ func Run(t *testing.T, newStore func(*testing.T) memory.Store) {
 		put(t, store, capture, 3)
 		find(t, store, memory.Query{Source: memory.SourceCapture, IncludeHistory: true}, capture.CreatedAt, 3)
 		find(t, store, memory.Query{Source: memory.SourceManual, SessionID: manual.SessionID}, capture.CreatedAt, 1)
+
 	})
 
 	t.Run("search metric retention follows reaper time", func(t *testing.T) {

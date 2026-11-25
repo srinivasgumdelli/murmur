@@ -204,10 +204,10 @@ func put(ctx context.Context, tx *sql.Tx, m memory.Memory, scopeCap int, actor m
 			m.Supersedes = &previous.ID
 		}
 	}
-	if scopeCap > 0 && !replacesCurrent {
+	if scopeCap > 0 && !replacesCurrent && m.Kind != memory.KindNone {
 		var count int
 		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM memories WHERE scope = ? AND `+current,
+			SELECT COUNT(*) FROM memories WHERE scope = ? AND kind <> 'none' AND `+current,
 			m.Scope, at).Scan(&count); err != nil {
 			return memory.Memory{}, false, err
 		}

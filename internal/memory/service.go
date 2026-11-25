@@ -13,6 +13,7 @@ import (
 
 const (
 	defaultTTL   = 90
+	noneTTL      = 7
 	defaultCap   = 1000
 	maxBody      = 4096
 	maxTTL       = 36500
@@ -157,6 +158,11 @@ func (s *Service) PutWithResult(ctx context.Context, actor Actor, req PutRequest
 		}
 	}
 	now := s.cfg.Now().UTC()
+	if req.Kind == KindNone {
+		// None markers only prove the stop gate ran; they don't count toward the
+		// scope cap, so keep them short-lived.
+		ttl = min(ttl, noneTTL)
+	}
 	expiresAt := now.AddDate(0, 0, ttl)
 	m := Memory{
 		Scope: req.Scope, Key: req.Key, Kind: req.Kind, Body: req.Body, Tags: req.Tags,
