@@ -2,6 +2,7 @@ package memory
 
 import (
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -25,6 +26,13 @@ const (
 	AdminAuthor            = "@murmur-admin"
 )
 
+type Source string
+
+const (
+	SourceManual  Source = "manual"
+	SourceCapture Source = "capture"
+)
+
 var (
 	ErrInvalid      = errors.New("invalid memory request")
 	ErrAuthRequired = errors.New("memory requires MURMUR_AUTH=required")
@@ -32,22 +40,25 @@ var (
 	ErrForbidden    = errors.New("memory operation forbidden")
 	ErrNotFound     = errors.New("memory not found")
 	ErrScopeFull    = errors.New("memory scope is full; expire or consolidate entries")
+	ErrBodyTooLarge = errors.New("memory body exceeds 4096 bytes")
 )
 
 type Memory struct {
-	ID         int        `json:"id"`
-	Scope      string     `json:"scope"`
-	Key        string     `json:"key,omitempty"`
-	Kind       Kind       `json:"kind"`
-	Body       string     `json:"body"`
-	Tags       []string   `json:"tags"`
-	Author     string     `json:"author"`
-	SessionID  string     `json:"session_id,omitempty"`
-	Provenance Provenance `json:"provenance"`
-	PromotedBy string     `json:"promoted_by,omitempty"`
-	Supersedes *int       `json:"supersedes,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	ID          int        `json:"id"`
+	Scope       string     `json:"scope"`
+	OriginScope string     `json:"origin_scope,omitempty"`
+	Key         string     `json:"key,omitempty"`
+	Kind        Kind       `json:"kind"`
+	Source      Source     `json:"source"`
+	Body        string     `json:"body"`
+	Tags        []string   `json:"tags"`
+	Author      string     `json:"author"`
+	SessionID   string     `json:"session_id,omitempty"`
+	Provenance  Provenance `json:"provenance"`
+	PromotedBy  string     `json:"promoted_by,omitempty"`
+	Supersedes  *int       `json:"supersedes,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 
 type Actor struct {
@@ -67,7 +78,8 @@ type PutRequest struct {
 	Scope     string   `json:"scope"`
 	Key       string   `json:"key,omitempty"`
 	Kind      Kind     `json:"kind,omitempty"`
-	Body      string   `json:"body"`
+	Body      string   `json:"body,omitempty"`
+	Source    Source   `json:"source,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
 	SessionID string   `json:"session_id,omitempty"`
 	TTLDays   *int     `json:"ttl_days,omitempty"`
@@ -78,6 +90,7 @@ type Query struct {
 	Text            string
 	Tags            []string
 	Kind            Kind
+	Source          Source
 	Author          string
 	SessionID       string
 	SearchSessionID string
@@ -102,13 +115,22 @@ type Stats struct {
 const StatsWindow = 7 * 24 * time.Hour
 
 type Event struct {
-	ID         int        `json:"id"`
-	Scope      string     `json:"scope"`
-	Key        string     `json:"key"`
-	Kind       Kind       `json:"kind"`
-	Provenance Provenance `json:"provenance"`
+	ID          int        `json:"id"`
+	Action      string     `json:"action"`
+	Scope       string     `json:"scope"`
+	OriginScope string     `json:"origin_scope,omitempty"`
+	Key         string     `json:"key"`
+	Kind        Kind       `json:"kind"`
+	Provenance  Provenance `json:"provenance"`
 }
 
 func CanExpire(m Memory, actor Actor) bool {
 	return actor.Admin || actor.Lead || (m.Provenance == Reported && m.Author == actor.Agent)
+}
+
+// SameCapture reports whether a repeated command capture adds any information.
+func SameCapture(previous, m Memory) bool {
+	return previous.Source == SourceCapture && m.Source == SourceCapture &&
+		m.Provenance == Reported && previous.Author == m.Author && previous.Body == m.Body &&
+		slices.Equal(previous.Tags, m.Tags)
 }

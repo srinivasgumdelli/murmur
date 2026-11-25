@@ -11,16 +11,16 @@ import (
 
 type fakeStore struct {
 	Store
-	put          func(Memory, int) (Memory, error)
+	put          func(Memory, int, Actor) (Memory, bool, error)
 	search       func(Query, time.Time) (Result, error)
 	recordSearch func(Actor, string, time.Time) error
 	promote      func(int, string, time.Time, int) (Memory, error)
 	expire       func(int, Actor, time.Time) (Memory, error)
-	purge        func(int) error
+	purge        func(int) (Memory, error)
 }
 
-func (f fakeStore) Put(_ context.Context, m Memory, cap int) (Memory, error) {
-	return f.put(m, cap)
+func (f fakeStore) Put(_ context.Context, m Memory, cap int, actor Actor) (Memory, bool, error) {
+	return f.put(m, cap, actor)
 }
 
 func (f fakeStore) Search(_ context.Context, q Query, at time.Time) (Result, error) {
@@ -39,7 +39,7 @@ func (f fakeStore) Expire(_ context.Context, id int, actor Actor, at time.Time) 
 	return f.expire(id, actor, at)
 }
 
-func (f fakeStore) Purge(_ context.Context, id int) error {
+func (f fakeStore) Purge(_ context.Context, id int) (Memory, error) {
 	return f.purge(id)
 }
 
@@ -47,14 +47,14 @@ func TestServicePut(t *testing.T) {
 	now := time.Date(2026, time.November, 26, 12, 0, 0, 0, time.UTC)
 	actor := Actor{Agent: "worker"}
 	var published []Event
-	store := fakeStore{put: func(m Memory, cap int) (Memory, error) {
-		if cap != 7 || m.Author != actor.Agent || m.Kind != KindNote ||
+	store := fakeStore{put: func(m Memory, cap int, actual Actor) (Memory, bool, error) {
+		if cap != 7 || actual != actor || m.Author != actor.Agent || m.Kind != KindNote || m.Source != SourceManual ||
 			m.Provenance != Reported || !m.CreatedAt.Equal(now) ||
 			m.ExpiresAt == nil || !m.ExpiresAt.Equal(now.AddDate(0, 0, 90)) {
 			t.Fatalf("incorrect server-owned values: %+v, cap=%d", m, cap)
 		}
 		m.ID = 12
-		return m, nil
+		return m, true, nil
 	}}
 	service := NewService(store, Config{
 		AuthMode: "required", ScopeCap: 7, Now: func() time.Time { return now },
@@ -66,7 +66,7 @@ func TestServicePut(t *testing.T) {
 	if err != nil || stored.ID != 12 {
 		t.Fatalf("put = %+v, err = %v", stored, err)
 	}
-	want := []Event{{ID: 12, Scope: "workspace:api", Key: "cmd.test", Kind: KindNote, Provenance: Reported}}
+	want := []Event{{ID: 12, Action: "put", Scope: "workspace:api", Key: "cmd.test", Kind: KindNote, Provenance: Reported}}
 	if !reflect.DeepEqual(published, want) {
 		t.Fatalf("published = %+v, want %+v", published, want)
 	}
@@ -86,9 +86,12 @@ func TestServicePutValidation(t *testing.T) {
 		{"direct shared write", PutRequest{Scope: SharedScope, Body: "a"}, ErrForbidden},
 		{"key format", PutRequest{Scope: "workspace:api", Key: "a b", Body: "a"}, ErrInvalid},
 		{"unknown kind", PutRequest{Scope: "workspace:api", Body: "a", Kind: KindAny}, ErrInvalid},
-		{"body limit", PutRequest{Scope: "workspace:api", Body: strings.Repeat("é", 2049)}, ErrInvalid},
+		{"body limit", PutRequest{Scope: "workspace:api", Body: strings.Repeat("é", 2049)}, ErrBodyTooLarge},
 		{"invalid text", PutRequest{Scope: "workspace:api", Body: "a\x00b"}, ErrInvalid},
 		{"keyed none", PutRequest{Scope: "workspace:api", Key: "a", Kind: KindNone}, ErrInvalid},
+		{"invalid source", PutRequest{Scope: "workspace:api", Body: "a", Source: "unknown"}, ErrInvalid},
+		{"capture without key", PutRequest{Scope: "workspace:api", Body: "a", Kind: KindCommand, Source: SourceCapture}, ErrInvalid},
+		{"capture without command", PutRequest{Scope: "workspace:api", Body: "a", Key: "a", Source: SourceCapture}, ErrInvalid},
 		{"invalid tag", PutRequest{Scope: "workspace:api", Body: "a", Tags: []string{""}}, ErrInvalid},
 		{"invalid ttl", PutRequest{Scope: "workspace:api", Body: "a", TTLDays: &explicitZero}, ErrInvalid},
 	} {
@@ -140,11 +143,11 @@ func TestServiceAccess(t *testing.T) {
 			}
 			return m, nil
 		},
-		purge: func(id int) error {
+		purge: func(id int) (Memory, error) {
 			if id != 2 {
 				t.Errorf("purge id %d, want 2", id)
 			}
-			return nil
+			return Memory{ID: id, Scope: SharedScope, OriginScope: "workspace:api", Provenance: Promoted}, nil
 		},
 	}, Config{AuthMode: "required", Publish: func(event Event) { published = append(published, event) }})
 	for _, actor := range []Actor{lead, admin} {
@@ -161,8 +164,26 @@ func TestServiceAccess(t *testing.T) {
 	if err := service.Purge(ctx, admin, 2); err != nil {
 		t.Errorf("admin purge: %v", err)
 	}
-	if len(published) != 3 {
-		t.Errorf("expected 3 events, got %+v", published)
+	if len(published) != 4 || published[3].Action != "purge" || published[3].OriginScope != "workspace:api" {
+		t.Errorf("expected 4 events, ending with purge, got %+v", published)
+	}
+}
+
+func TestRepeatedCaptureDoesNotPublishAgain(t *testing.T) {
+	service := NewService(fakeStore{
+		put: func(m Memory, _ int, _ Actor) (Memory, bool, error) {
+			if m.Source != SourceCapture {
+				t.Errorf("stored source = %q, want capture", m.Source)
+			}
+			m.ID = 1
+			return m, false, nil
+		},
+	}, Config{AuthMode: "required", Publish: func(event Event) { t.Errorf("duplicate event: %+v", event) }})
+	stored, err := service.Put(t.Context(), Actor{Agent: "worker"}, PutRequest{
+		Scope: "workspace:api", Key: "cmd.test", Kind: KindCommand, Body: "go test", Source: SourceCapture,
+	})
+	if err != nil || stored.ID != 1 {
+		t.Fatalf("put = %+v, err = %v", stored, err)
 	}
 }
 
