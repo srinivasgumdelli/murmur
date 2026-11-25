@@ -5,10 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/handler"
+	"github.com/srinivasgumdelli/murmur/internal/memory"
+	"github.com/srinivasgumdelli/murmur/internal/memory/pgstore"
 	"github.com/srinivasgumdelli/murmur/internal/schema"
 	"github.com/srinivasgumdelli/murmur/internal/ui"
 )
@@ -18,6 +21,18 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func positiveSetting(key string, fallback, max int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > max {
+		log.Fatalf("%s must be an integer between 1 and %d", key, max)
+	}
+	return value
 }
 
 func main() {
@@ -43,16 +58,29 @@ func main() {
 	notifier := handler.NewNotifier()
 	notifier.Listen(ctx, pool)
 
+	memoryStore := pgstore.New(pool)
+	if err := memoryStore.Apply(ctx); err != nil {
+		log.Fatalf("apply memory schema: %v", err)
+	}
+	memoryService := memory.NewService(memoryStore, memory.Config{
+		AuthMode: authMode,
+		TTLDays:  positiveSetting("MURMUR_MEMORY_TTL_DAYS", 90, 36500),
+		ScopeCap: positiveSetting("MURMUR_MEMORY_SCOPE_CAP", 1000, 1<<31-1),
+		Publish:  notifier.PublishMemory,
+	})
+	memoryRetention := time.Duration(positiveSetting("MURMUR_MEMORY_KEEP_EXPIRED_DAYS", 30, 36500)) * 24 * time.Hour
+
 	startTime := time.Now()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/messages/stream", handler.Stream(pool))
+	mux.HandleFunc("/messages/stream", handler.MemoryStream(notifier, authMode, handler.Stream(pool)))
 	mux.HandleFunc("/messages/poll", handler.Poll(pool, notifier))
 	mux.HandleFunc("/messages/", handler.Messages(pool))
 	mux.HandleFunc("/messages", handler.Messages(pool))
 	mux.HandleFunc("/agents/", handler.Agents(pool))
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
-	mux.HandleFunc("/health", handler.Health(pool, startTime))
+	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryService.Health))
+	handler.InstallMemoryRoutes(mux, memoryService, authMode)
 	mux.HandleFunc("/", ui.Handler())
 
 	var srv http.Handler = mux
@@ -61,7 +89,9 @@ func main() {
 		log.Printf("auth mode: %s", authMode)
 	}
 
-	handler.StartReaper(ctx, pool, messageTTL)
+	handler.StartReaper(ctx, pool, messageTTL, func(ctx context.Context) error {
+		return memoryService.Reap(ctx, memoryRetention)
+	})
 	log.Printf("murmur ready on :%s", port)
 	if err := http.ListenAndServe(":"+port, srv); err != nil {
 		log.Fatalf("server: %v", err)

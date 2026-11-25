@@ -8,8 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string) {
-	if messageTTL == "" {
+func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string, reapMemory func(context.Context) error) {
+	if messageTTL == "" && reapMemory == nil {
 		return
 	}
 	go func() {
@@ -21,6 +21,14 @@ func StartReaper(ctx context.Context, pool *pgxpool.Pool, messageTTL string) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if reapMemory != nil {
+					if err := reapMemory(ctx); err != nil {
+						log.Printf("reaper: memory cleanup: %v", err)
+					}
+				}
+				if messageTTL == "" {
+					continue
+				}
 				res, err := pool.Exec(ctx,
 					`DELETE FROM messages WHERE created_at < now() - $1::interval`, messageTTL)
 				if err != nil {

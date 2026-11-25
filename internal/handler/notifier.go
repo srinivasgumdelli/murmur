@@ -10,13 +10,15 @@ import (
 )
 
 type Notifier struct {
-	mu      sync.Mutex
-	waiters map[chan struct{}]string // chan -> agent name
+	memorySubscribers map[*memorySubscription]struct{}
+	mu                sync.Mutex
+	waiters           map[chan struct{}]string // chan -> agent name
 }
 
 func NewNotifier() *Notifier {
 	return &Notifier{
-		waiters: make(map[chan struct{}]string),
+		waiters:           make(map[chan struct{}]string),
+		memorySubscribers: make(map[*memorySubscription]struct{}),
 	}
 }
 
