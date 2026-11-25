@@ -96,6 +96,7 @@ func main() {
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
 	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryService.Health))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
+	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))
 	mux.HandleFunc("/", ui.Handler())
 
 	var srv http.Handler = mux

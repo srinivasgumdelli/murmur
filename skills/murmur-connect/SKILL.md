@@ -42,6 +42,8 @@ Detection order:
 
 Only ask the user if the health check fails after auto-detection.
 
+If the server uses required authentication, export the provisioned agent key as `MURMUR_KEY`, add `-H "X-Murmur-Key: $MURMUR_KEY"` to the message and agent requests below, and use the agent name bound to that key.
+
 ### 2. Auto-approve Murmur curl calls
 
 Add to `.claude/settings.json` so long poll and messages don't prompt:
@@ -95,13 +97,15 @@ cat > "$SCRATCH/murmur-wait.sh" <<'EOF'
 # prints it, records the last id, and exits.
 AGENT=AGENT_NAME
 URL=${MURMUR_URL:-http://localhost:4444}
+AUTH=()
+if [ -n "${MURMUR_KEY:-}" ]; then AUTH=(-H "X-Murmur-Key: $MURMUR_KEY"); fi
 STATE="$(dirname "$0")/murmur-last-id"
 LAST=$(cat "$STATE" 2>/dev/null)
-[ -z "$LAST" ] && LAST=$(curl -sf "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
+[ -z "$LAST" ] && LAST=$(curl -sf "${AUTH[@]}" "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
 [ -z "$LAST" ] && LAST=latest
 TMP=$(mktemp)
 while true; do
-  if curl -sf "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
+  if curl -sf "${AUTH[@]}" "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
     NEW=$(jq -r '.last_id // 0' "$TMP")
     if [ "$NEW" != "0" ] && [ "$NEW" != "$LAST" ]; then
       LAST=$NEW; echo "$LAST" > "$STATE"
@@ -248,6 +252,28 @@ curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
 Save durable project knowledge in Murmur memory. Use entries for commands, decisions, conventions, and pitfalls future agents need. Use chat for coordination and put project knowledge in Murmur memory instead of local memory files.
 
 The memory API requires the server to run with `MURMUR_AUTH=required`. Use the agent API key from `MURMUR_KEY` and the workspace ID from `MURMUR_WORKSPACE`. When `MURMUR_TASK` is set, use `task:$MURMUR_TASK` for task-specific notes. Reported notes identify their author. A lead or admin can promote an entry to shared project memory.
+
+### Memory tools
+
+Connect a Streamable HTTP MCP client to `$MURMUR_URL/mcp`. For Claude Code, merge this entry into the project's `.mcp.json` and approve the Murmur server when prompted. Use a base URL without a trailing slash. Claude Code expands the environment variable references when it connects.
+
+```json
+{
+  "mcpServers": {
+    "murmur": {
+      "type": "http",
+      "url": "${MURMUR_URL}/mcp",
+      "headers": {"X-Murmur-Key": "${MURMUR_KEY}"}
+    }
+  }
+}
+```
+
+- Use `memory_search` with `q` and the relevant scopes, such as `workspace:api-server,shared`. Include a task scope for task work.
+- Use `memory_put` with `body`, `scope`, and optionally a stable `key`, `kind`, `tags`, and `session_id`. For the Stop prompt, use `kind: "none"` and omit the key if nothing is worth saving.
+- Use `memory_expire` with the entry `id` to expire a report you own.
+
+### HTTP fallback
 
 Search current notes in your workspace and shared memory. Add another `scope` parameter to include a task.
 
