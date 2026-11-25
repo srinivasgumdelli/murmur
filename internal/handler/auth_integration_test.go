@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -212,15 +213,55 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	}
 	createMessage(`{"sender":"sends-first","to":"registers-first","message":"hidden from stream"}`)
 	broadcast := createMessage(`{"sender":"sends-first","message":"broadcast"}`)
-	reader := bufio.NewReader(response.Body)
-	event, err := reader.ReadString('\n')
-	if err != nil || event != "event: message\n" {
-		t.Fatalf("stream event %q: %v", event, err)
+	readStreamMessage := func(body io.Reader) model.Message {
+		t.Helper()
+		reader := bufio.NewReader(body)
+		event, err := reader.ReadString('\n')
+		if err != nil || event != "event: message\n" {
+			t.Fatalf("stream event %q: %v", event, err)
+		}
+		data, err := reader.ReadString('\n')
+		value, ok := strings.CutPrefix(data, "data: ")
+		var received model.Message
+		if err != nil || !ok || json.Unmarshal([]byte(value), &received) != nil {
+			t.Fatalf("invalid stream message %q: %v", data, err)
+		}
+		return received
 	}
-	data, err := reader.ReadString('\n')
-	value, ok := strings.CutPrefix(data, "data: ")
-	var received model.Message
-	if err != nil || !ok || json.Unmarshal([]byte(value), &received) != nil || received.ID != broadcast {
-		t.Fatalf("stream should skip the unrelated direct message, got %q: %v", data, err)
+	if received := readStreamMessage(response.Body); received.ID != broadcast {
+		t.Fatalf("stream exposed an unrelated direct message: %+v", received)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A named auth-off stream uses the requested agent for receipt tracking.
+	// An unaddressed outgoing message can be visible without being delivered.
+	offServer := httptest.NewServer(off)
+	defer offServer.Close()
+	stream, err = http.NewRequestWithContext(ctx, http.MethodGet, offServer.URL+"/messages/stream?agent=sends-first", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownStream, err := offServer.Client().Do(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ownStream.Body.Close()
+	if ownStream.StatusCode != http.StatusOK {
+		t.Fatalf("auth-off stream status %d", ownStream.StatusCode)
+	}
+	privateID := createMessage(`{"sender":"sends-first","to":"registers-first","message":"private outgoing"}`)
+	broadcastID := createMessage(`{"sender":"sends-first","message":"own broadcast"}`)
+	received := readStreamMessage(ownStream.Body)
+	if received.ID != broadcastID || received.Status != "sent" {
+		t.Fatalf("sender stream should skip the direct message and leave its broadcast sent: %+v", received)
+	}
+	for _, id := range []int{privateID, broadcastID} {
+		record := do(required, http.MethodGet, fmt.Sprintf("/messages/%d", id), admin, "", http.StatusOK)
+		var unchanged model.Message
+		if err := json.Unmarshal(record.Body.Bytes(), &unchanged); err != nil || unchanged.Status != "sent" {
+			t.Fatalf("sender stream marked message %d delivered: %s (%v)", id, record.Body, err)
+		}
 	}
 }
