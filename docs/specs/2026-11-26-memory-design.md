@@ -444,3 +444,12 @@ Done when: script tests pass in CI and the manual check is recorded in the PR.
 - Whether the `lead` role used for promotion is a new value in `agents.role` or comes from groups.
 - Whether search should also return relevant recent messages, or stay strictly separate.
 - Default caps (4 KB body, 1,000 entries per scope, 90-day TTL) need checking against real use.
+
+## Phase 0 decisions
+
+- Launchers set `MURMUR_WORKSPACE` explicitly and may set `MURMUR_TASK`. This keeps scope names stable across checkouts.
+- The admin grants promotion authority by registering an agent with `role=lead` using the admin key. Registration by an ordinary agent can set its display role but cannot grant promotion authority. Existing lead records require an admin registration to acquire the grant.
+- Memory search returns memory entries. Existing message endpoints continue to serve chat history.
+- The initial defaults are a 4 KiB body, 1,000 current entries per scope, and a 90-day TTL for reports. Review them with deployment data.
+- Claude Code documents startup, resume and compact session-start sources and `additionalContext`, the one-retry stop decision, and the write/edit denial response. Bash's successful post-tool hook has a structured result with interruption status. Disable built-in auto-memory with `autoMemoryEnabled: false`. [Claude Code hooks](https://code.claude.com/docs/en/hooks) and [Claude Code memory](https://code.claude.com/docs/en/memory).
+- The FTS5 spike passed with `CGO_ENABLED=0` and `modernc.org/sqlite` v1.63.0 using WAL, an external-content table, an insert trigger, and a ranked query with `bm25()`. [SQLite driver](https://pkg.go.dev/modernc.org/sqlite@v1.63.0).
