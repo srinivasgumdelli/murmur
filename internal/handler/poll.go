@@ -132,14 +132,13 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 	var msgs []model.Message
 	lastID := after
 	var ids []int
-	viewer := AgentFromContext(ctx)
 	for rows.Next() {
 		var m model.Message
 		if err := rows.Scan(&m.ID, &m.Sender, &m.SessionID, &m.Channel, &m.To, &m.ReplyTo, &m.Message, &m.Metadata, &m.Status, &m.CreatedAt); err != nil {
 			log.Printf("poll scan: %v", err)
 			continue
 		}
-		if m.Status == "sent" && (viewer == "" || m.Sender != viewer || (m.To != nil && *m.To == viewer)) {
+		if m.Status == "sent" && (m.Sender != agent || (m.To != nil && *m.To == agent)) {
 			ids = append(ids, m.ID)
 			m.Status = "delivered"
 		}

@@ -54,7 +54,7 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	if !checkAgent(w, r, req.Name) {
 		return
 	}
-	admin := principalFromContext(r.Context()).admin
+	actor := principalFromContext(r.Context())
 	if req.Capabilities == nil {
 		req.Capabilities = []string{}
 	}
@@ -66,15 +66,20 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	err := pool.QueryRow(r.Context(),
 		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
 		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
-		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text,
+		 ON CONFLICT (name) DO UPDATE SET
+		 session_id = CASE WHEN $6 OR NOT agents.memory_lead THEN gen_random_uuid()::text ELSE agents.session_id END,
 		 role = $2,
-		 memory_lead = CASE WHEN $6 THEN $2 = 'lead' ELSE agents.memory_lead END, description = $3, capabilities = $4, groups = $5, status = 'online', last_seen = now()
-		 WHERE $6 OR NOT agents.memory_lead OR agents.role = $2
+		 memory_lead = CASE WHEN $6 THEN $2 = 'lead' ELSE agents.memory_lead END,
+		 description = CASE WHEN $6 OR NOT agents.memory_lead THEN $3 ELSE agents.description END,
+		 capabilities = CASE WHEN $6 OR NOT agents.memory_lead THEN $4 ELSE agents.capabilities END,
+		 groups = CASE WHEN $6 OR NOT agents.memory_lead THEN $5 ELSE agents.groups END,
+		 status = 'online', last_seen = now()
+		 WHERE $6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2)
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, admin,
+		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "forbidden: only an admin can change a memory lead's role", http.StatusForbidden)
+		http.Error(w, "forbidden: a memory lead can rejoin with its own key and assigned role, or be registered by an admin", http.StatusForbidden)
 		return
 	}
 	if err != nil {
