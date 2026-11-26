@@ -1,8 +1,8 @@
-# Murmur — Message Bus for Agentic Systems
+# Murmur — Message Bus and Project Memory
 
 ## What
 
-A lightweight message bus for AI agent sessions to communicate reliably. Agents post messages, read messages, and stream updates in real-time. Channels scope conversations. Postgres stores history. SSE delivers messages instantly.
+A lightweight message bus and persistent project memory for AI agent sessions. Messages support live conversations over channels. Memory supports searching for durable project knowledge across sessions.
 
 ## Why
 
@@ -10,9 +10,9 @@ AI agent systems that span multiple sessions (host + sandbox, reviewer + builder
 
 - **File-based handoff**: Race conditions, no history, status confusion, fragile polling
 - **Orchestrator dispatch**: Central bottleneck, no peer-to-peer, sequential only
-- **Shared memory/knowledge graph**: Wrong abstraction (search, not chat)
+- **Search-only handoff**: Agents have to look for updates during an active conversation
 
-Murmur is a message bus. Agents decide what to say and who to talk to. The bus just delivers messages reliably with history.
+Murmur delivers agent messages with history. Its memory API stores searchable notes with verified authorship, scoped version history, and lead or admin promotion.
 
 ## Architecture
 
@@ -33,7 +33,7 @@ Murmur is a message bus. Agents decide what to say and who to talk to. The bus j
                           └───────────┘
 ```
 
-Dockerized. Own Postgres instance, not shared with any project database.
+The Docker deployment includes a dedicated Postgres instance. Messages, agents, and API keys use Postgres. Memory uses that database by default and can use a local SQLite file. The memory service owns permissions, limits, and events across the HTTP and MCP transports. Claude Code hooks use the HTTP API for session context and command capture.
 
 ## Endpoints
 
@@ -139,8 +139,30 @@ List registered agents.
 ### `GET /health`
 
 ```json
-{"status": "ok", "messages": 142, "agents": 2, "uptime": "2h30m"}
+{"status": "ok", "messages": 142, "agents": 2, "uptime": "2h30m", "memory": "ok"}
 ```
+
+Memory availability is checked only with `MURMUR_AUTH=required`. A failed memory check returns HTTP 503 and a `degraded` status.
+
+### Memory
+
+Memory endpoints require `MURMUR_AUTH=required` and a valid key in `X-Murmur-Key` or an `Authorization: Bearer` header. Scopes group notes by workspace, task, or shared project knowledge. The API limits note bodies to 4096 bytes.
+
+| Endpoint | Behavior |
+|---|---|
+| `POST /memories` | Save a reported entry in a workspace or task scope. The server sets authorship from the key. Returns HTTP 201 for a new version or 200 for a reused capture. |
+| `GET /memories` | Search current entries with `q`, `scope`, `tags`, `kind`, `source`, `author`, `session_id`, `since`, `include_history`, and `limit`. Repeat `tags` or use comma-separated values. Percent-encode any comma within a tag. `X-Murmur-Session-ID` associates the search with a session for metrics. The response includes items and a total before the limit. |
+| `GET /memories/{id}` | Read an entry, with its superseded versions when `include_history=true`. |
+| `POST /memories/{id}/promote` | Copy an entry into shared memory. Requires a lead or admin. Returns HTTP 200 when reusing a keyless promotion. |
+| `DELETE /memories/{id}` | Expire an entry. Requires the author, a lead, or an admin. Promoted entries require a lead or admin. |
+| `POST /memories/{id}/purge` | Remove one entry and log the action. Requires an admin. |
+| `GET /memories/stats` | Return scope counts and seven-day activity metrics. |
+| `GET /messages/stream?types=memory` | Subscribe to memory events on a dedicated stream. Use `scope` to filter by event scope or promotion origin. Events include the action and cover writes, promotions, expiries, and purges made through the local Murmur instance. |
+| `/mcp` | Streamable HTTP MCP endpoint for `memory_search`, `memory_put`, and `memory_expire`. |
+
+The author, a lead, or an admin can supersede a current keyed entry. Promotions track the original scope, so the same key can appear in shared memory from different scopes. Search uses Postgres full-text search or SQLite FTS5, with provenance and recency to break ties. Expiry removes an entry from normal search. Reported entries have a default 90-day TTL, and the reaper removes expired history after 30 days by default.
+
+See the [memory design](docs/specs/2026-11-26-memory-design.md) for the data model, trust rules, and rollout.
 
 ## Database
 
@@ -222,49 +244,21 @@ BUS_DATABASE_URL=postgres://murmur:murmur@postgres:5432/murmur?sslmode=disable
 MURMUR_ADMIN_KEY=                # Admin key for key management (empty = key management disabled)
 MURMUR_AUTH=off                  # Auth mode: off, optional, required
 MURMUR_MESSAGE_TTL=              # Message retention (e.g. '7 days'). Empty = keep forever
+MURMUR_MEMORY_STORE=postgres     # Memory backend: postgres or sqlite
+MURMUR_MEMORY_DB=./murmur-memory.db # SQLite memory database file
+MURMUR_MEMORY_TTL_DAYS=90         # Default lifetime for reported entries
+MURMUR_MEMORY_KEEP_EXPIRED_DAYS=30 # Expired-history retention
+MURMUR_MEMORY_SCOPE_CAP=1000      # Current entries per scope
 ```
 
 ## Docker Compose
 
-```yaml
-version: "3.8"
-
-services:
-  murmur:
-    build: .
-    ports:
-      - "4444:4444"
-    environment:
-      - BUS_PORT=4444
-      - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: murmur
-      POSTGRES_PASSWORD: murmur
-      POSTGRES_DB: murmur
-    volumes:
-      - murmur-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U murmur"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  murmur-data:
-```
+The [Compose configuration](docker-compose.yml) starts Murmur and Postgres, keeps Postgres data in `murmur-data`, and mounts `murmur-memory-data` at the container's writable home directory. Set `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` to enable memory. Set `MURMUR_MEMORY_STORE=sqlite` to use the mounted volume for memory. Override `MURMUR_MEMORY_DB` to select a different file inside the container.
 
 ## Dockerfile
 
 ```dockerfile
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.3-alpine AS builder
 RUN apk add --no-cache git ca-certificates
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -296,28 +290,28 @@ Agents connect via `http://YOUR_HOST:4444` (from local network) or `http://local
 
 ```bash
 # Send
-curl -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","message":"Deployed frontend."}'
 
 # Read
-curl http://YOUR_HOST:4444/messages?after=0&limit=10
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://YOUR_HOST:4444/messages?after=0&limit=10"
 
 # Long poll (recommended for agents) — after=latest starts at the current tip
-curl http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
 
 # Stream (dashboard only)
-curl -N http://YOUR_HOST:4444/messages/stream
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -N http://YOUR_HOST:4444/messages/stream
 
 # Register
-curl -X POST http://YOUR_HOST:4444/agents \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"host","role":"host","capabilities":["ssh","deploy"]}'
 ```
 
-### Future: MCP Server
+### MCP server
 
-Wrap the HTTP API as an MCP server so agents get native tools (`send_message`, `read_messages`, `stream_messages`) instead of curl. HTTP-first is the right MVP. MCP is the upgrade path.
+Clients can connect to `/mcp` for memory tools. Message clients use the existing HTTP endpoints.
 
 ## Message Conventions
 
@@ -392,7 +386,7 @@ Murmur fills this gap.
 
 ## Agent Connection Guide
 
-### How agents connect (no MCP, just curl via Bash tool)
+### How agents connect for messaging
 
 Each Claude Code session has the Bash tool. Agents use `curl` to talk to the bus. Add the following to each session's CLAUDE.md or agent prompt.
 
@@ -406,22 +400,22 @@ Message bus for inter-session communication. Use curl via Bash tool.
 Bus URL: http://YOUR_HOST:4444
 
 ### Send a message
-curl -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","message":"YOUR MESSAGE","metadata":{}}'
 
 ### Read recent messages
-curl -sf http://YOUR_HOST:4444/messages?after=0&limit=20
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages?after=0&limit=20"
 
 ### Read new messages since last check
-curl -sf http://YOUR_HOST:4444/messages?after=LAST_ID
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages?after=LAST_ID"
 
 ### Long poll for messages (recommended for real-time)
 # Server holds request up to 30s, returns instantly on new messages
-curl -sf http://YOUR_HOST:4444/messages/poll?agent=host&after=LAST_ID&timeout=30
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=LAST_ID&timeout=30"
 
 ### Register on startup
-curl -sf -X POST http://YOUR_HOST:4444/agents \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"host","role":"host","capabilities":["ssh","deploy","aws","e2e"]}'
 ```
@@ -436,20 +430,20 @@ Message bus for inter-session communication. Use curl via Bash tool.
 Bus URL: http://BUS_HOST:4444
 
 ### Send a message
-curl -sf -X POST http://BUS_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","message":"YOUR MESSAGE","metadata":{}}'
 
 ### Read recent messages
-curl -sf http://BUS_HOST:4444/messages?after=0&limit=20
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://BUS_HOST:4444/messages?after=0&limit=20"
 
 ### Check for replies (poll pattern)
 LAST_ID=0
-RESP=$(curl -sf http://BUS_HOST:4444/messages?after=$LAST_ID)
+RESP=$(curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://BUS_HOST:4444/messages?after=$LAST_ID")
 # Parse RESP, update LAST_ID from last_id field
 
 ### Register on startup
-curl -sf -X POST http://BUS_HOST:4444/agents \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://BUS_HOST:4444/agents \
   -H "Content-Type: application/json" \
   -d '{"name":"sandbox","role":"sandbox","capabilities":["code","git-push"]}'
 ```
@@ -461,28 +455,28 @@ Replace `BUS_HOST` with YOUR_HOST's IP or hostname reachable from the sandbox co
 **Request-response (deploy handoff)**:
 ```bash
 # Sandbox sends
-curl -sf -X POST http://BUS_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","channel":"deploy","message":"Deploy frontend please","metadata":{"branch":"fix/xxx","services":["frontend"]}}'
 
 # Host reads deploy channel
-curl -sf http://YOUR_HOST:4444/messages?channel=deploy&after=0
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages?channel=deploy&after=0"
 
 # Host responds
-curl -sf -X POST http://YOUR_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOUR_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"host","channel":"deploy","message":"Deployed. Health OK.","metadata":{"commit":"abc123"}}'
 
 # Sandbox checks for reply
-curl -sf http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://BUS_HOST:4444/messages?channel=deploy&after=LAST_ID"
 ```
 
 **Real-time monitoring (host runs a background watcher)**:
-```bash
-# In Claude Code, run murmur-wait.sh (see README, "Start the background
-# message watcher") as a background Bash command. It long-polls with
-# after=<last_id>&timeout=30, exits when a message from another agent
-# arrives, and is restarted after each one.
+```javascript
+// In Claude Code, run murmur-wait.sh (see README, "Start the background
+// message watcher") as a background Bash command. It long-polls with
+// after=<last_id>&timeout=30, exits when a message from another agent
+// arrives, and is restarted after each one.
 Bash({ command: "./murmur-wait.sh", run_in_background: true })
 ```
 Each new message ends the watcher and triggers one notification. Long poll holds for 30s and returns instantly on new messages. The Monitor tool is not used because it caps watches at 30 minutes.
@@ -490,12 +484,12 @@ Each new message ends the watcher and triggers one notification. Long poll holds
 **Direct message (1:1)**:
 ```bash
 # Sandbox asks host directly
-curl -sf -X POST http://BUS_HOST:4444/messages \
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://BUS_HOST:4444/messages \
   -H "Content-Type: application/json" \
   -d '{"sender":"sandbox","to":"host","message":"Is the RDS still alive?"}'
 
 # Host long-polls for messages addressed to it
-curl -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
+curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
 ```
 
 ### Network requirements
