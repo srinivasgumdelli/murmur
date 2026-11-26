@@ -107,7 +107,7 @@ murmur connect --agent reviewer --workspace murmur -- codex
 murmur connect --agent builder --workspace murmur --claude-hooks -- claude
 ```
 
-The wrapper adds the authenticated HTTP MCP configuration for both clients. It passes the agent's name, key, workspace, and optional task to the child environment and strips the admin key. Use `--url` to select a bus and `--task` to include task memory. `--claude-hooks` attaches the bundled memory hooks for that invocation and requires Bash, curl, and jq.
+The wrapper adds the authenticated HTTP MCP configuration for both clients. It passes the agent's name, key, workspace, and optional task to the child environment and strips the admin key. It also maintains the agent's presence while the child runs. Use `--url` to select a bus and `--task` to include task memory. `--claude-hooks` attaches the bundled memory hooks for that invocation and requires Bash, curl, and jq.
 
 Use `murmur enroll --agent reviewer` to stage an identity before starting the agent. `GET /identity` verifies an agent key even while chat auth is off. For an existing client profile, `murmur mcp-headers --agent reviewer` supplies a saved header to a trusted MCP header helper. The helper verifies the agent identity and never issues an enrollment.
 

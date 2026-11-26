@@ -108,3 +108,8 @@ func (c *client) verify(ctx context.Context, agent, key string) error {
 	}
 	return nil
 }
+
+func (c *client) heartbeat(ctx context.Context, agent, key string) error {
+	var result model.Agent
+	return c.request(ctx, http.MethodPost, "/agents/"+url.PathEscape(agent)+"/heartbeat?inbox=false", key, nil, &result)
+}

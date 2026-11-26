@@ -28,6 +28,11 @@ func TestLauncherReusesCredentialAndKeepsAdminOutOfChild(t *testing.T) {
 			default:
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 			}
+		case "/agents/pilot/heartbeat":
+			if r.Method != http.MethodPost || r.Header.Get("X-Murmur-Key") != key || r.URL.Query().Get("inbox") != "false" {
+				t.Error("launcher presence must use the agent credential without fetching its inbox")
+			}
+			fmt.Fprint(w, `{"name":"pilot"}`)
 		case "/keys":
 			var payload struct {
 				Agent  string
