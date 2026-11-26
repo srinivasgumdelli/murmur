@@ -41,7 +41,11 @@ func positiveSetting(key string, fallback, max int) (int, error) {
 
 func main() {
 	if len(os.Args) > 1 {
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		signals := []os.Signal{syscall.SIGTERM}
+		if os.Args[1] != "connect" {
+			signals = append(signals, os.Interrupt)
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), signals...)
 		err := connect.Run(ctx, os.Args[1:])
 		cancel()
 		if child, ok := err.(*exec.ExitError); ok && child.ExitCode() > 0 {
@@ -132,7 +136,7 @@ func run() error {
 	mux.HandleFunc("/agents/", handler.Agents(pool))
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
-	mux.HandleFunc("GET /identity", handler.Identity)
+	mux.HandleFunc("GET /identity", handler.Identity(authMode))
 	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
 	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))

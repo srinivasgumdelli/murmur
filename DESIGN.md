@@ -133,7 +133,7 @@ List registered agents.
 | Endpoint | Behavior |
 | --- | --- |
 | `POST /keys` | Requires the admin key. Returns a new agent key once and stores its hash. Send `{"agent":"reviewer","enroll":true}` to create the agent if needed and issue its key in one transaction. Enrollment preserves existing agent metadata. |
-| `GET /identity` | Requires a valid Murmur key in every auth mode. Returns the verified agent identity and whether the key has admin or lead access. |
+| `GET /identity` | Requires a valid Murmur key in every auth mode. Returns the verified agent identity and whether the key has admin or lead access, plus the configured chat auth mode in `chat_auth`. |
 | `POST /agents/{name}/heartbeat?inbox=false` | Records launcher presence and returns the agent without fetching or changing the delivery status of pending messages. |
 
 For Docker, the enrollment container writes the agent credential into a volume dedicated to that identity. The regular agent mounts it read-only. The launcher selects the profile by bus URL and agent name, verifies the credential, and supplies it to the MCP client and optional hooks or watcher. Read the [Docker enrollment guide](docs/agent-enrollment.md) for commands.

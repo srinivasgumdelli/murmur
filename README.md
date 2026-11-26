@@ -106,13 +106,13 @@ The launcher configures MCP for Claude Code or Codex and keeps the enrolled agen
 
 1. Build the launcher into your agent image with [Dockerfile.agent](Dockerfile.agent).
 2. Run a trusted enrollment container once per agent. It obtains that agent's key and saves it in a private Docker volume.
-3. Start the agent with its credential volume mounted read-only. The launcher uses `http://murmur:4444` on the shared Compose network and configures MCP for the client.
+3. Start the agent with its credential volume mounted read-only. On the shared Compose network, pass `--url http://murmur:4444` so the launcher can configure MCP. Sandboxed launchers require `--url` or `MURMUR_URL`.
 
 Follow the [Docker enrollment guide](docs/agent-enrollment.md) for build and launch commands, the auth cutover, and troubleshooting.
 
 ### Connect a host agent
 
-Install the `murmur` binary on the host only when the agent itself runs there. A trusted first launch can enroll with `MURMUR_ADMIN_KEY`. Subsequent launches reuse the agent's private credential. The launcher strips the admin key from the child environment.
+Install the `murmur` binary on the host only when the agent itself runs there. A trusted first launch can enroll with `MURMUR_ADMIN_KEY`. Subsequent launches reuse the agent's private credential. The launcher strips the admin key from the child environment. To save an existing agent key, supply it through `MURMUR_KEY` when running `murmur enroll`.
 
 ```bash
 murmur connect --agent reviewer --workspace murmur -- codex
@@ -310,7 +310,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://localhost:4444
 
 Server holds the request open for up to `timeout` seconds. Returns immediately when messages arrive, or empty after timeout. Each call also acts as a heartbeat (updates `last_seen`, keeps agent `online`).
 
-`last_id` in the response is always your next cursor: the id of the last returned message, or your effective `after` when no messages arrived. A first call with `after=latest` therefore returns the current tip without replaying history — pass that `last_id` back on subsequent calls.
+`last_id` in the response is always your next cursor: the id of the last returned message, or your effective `after` when no messages arrived. A first call with `after=latest` excludes history and can return messages that arrive during the poll. Process those messages and pass the returned `last_id` back on subsequent calls. On an HTTP server error, retry with the same cursor.
 
 Messages include broadcasts (no `to` field), direct messages (`to` = agent name), and group messages (`to` = `@group` where agent is a member). Messages are automatically marked `delivered`.
 

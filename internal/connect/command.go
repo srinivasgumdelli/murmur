@@ -7,12 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/srinivasgumdelli/murmur/internal/model"
@@ -95,6 +98,9 @@ func Run(ctx context.Context, args []string) error {
 		}
 	}
 
+	if o.url == "" {
+		return errors.New("provide --url or MURMUR_URL in a sandbox (for example, http://murmur:4444 on the Compose network)")
+	}
 	c, err := newClient(o.url)
 	if err != nil {
 		return err
@@ -105,7 +111,12 @@ func Run(ctx context.Context, args []string) error {
 		endpoint != "" && strings.TrimRight(endpoint, "/") != c.base+"/mcp" {
 		return errors.New("Murmur helper refused to provide a credential for a different MCP endpoint")
 	}
-	key, err := loadCredential(ctx, c, o, command == "connect" || command == "enroll")
+	var key string
+	if command == "enroll" && os.Getenv("MURMUR_KEY") != "" {
+		err = importCredential(ctx, c, o, os.Getenv("MURMUR_KEY"))
+	} else {
+		key, err = loadCredential(ctx, c, o, command == "connect" || command == "enroll")
+	}
 	if err != nil {
 		return err
 	}
@@ -128,7 +139,13 @@ func defaultURL() string {
 		return configured
 	}
 	if os.Getenv("MOAT_SANDBOX") != "" || os.Getenv("DEVCONTAINER") != "" {
-		return "http://host.docker.internal:4444"
+		return ""
+	}
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return ""
+	}
+	if _, err := os.Stat("/run/.containerenv"); err == nil {
+		return ""
 	}
 	return "http://localhost:4444"
 }
@@ -221,12 +238,18 @@ func launch(ctx context.Context, c *client, o options, key string, argv []string
 		settings = path
 	}
 	cmd := exec.CommandContext(ctx, argv[0], childArgs(argv, c.base+"/mcp", settings)...)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = childEnvironment(os.Environ(), env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
 	// An MCP-only client still appears live in the operator dashboard.
 	if err := c.heartbeat(ctx, o.agent, key); err != nil {
-		return fmt.Errorf("start agent presence: %w", err)
+		var status *statusError
+		if !errors.As(err, &status) || status.code != http.StatusNotFound {
+			return fmt.Errorf("start agent presence: %w", err)
+		}
+		fmt.Fprintf(os.Stderr, "Murmur has no presence record for %s. Register the agent to appear in the dashboard.\n", o.agent)
 	}
 	var output io.Writer
 	if o.thread != "" {
@@ -248,9 +271,17 @@ func launch(ctx context.Context, c *client, o options, key string, argv []string
 			fmt.Fprintf(os.Stderr, "Murmur watcher stopped: %v\n", err)
 		}
 	}()
+	// The terminal delivers Ctrl+C to the foreground group, including the child.
+	// Keep the launcher alive while the agent handles the interrupt.
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+	defer signal.Stop(interrupt)
 	err := cmd.Run()
 	cancel()
 	<-finished
+	if errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled {
+		return nil
+	}
 	return err
 }
 

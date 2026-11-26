@@ -111,11 +111,13 @@ func issueKey(ctx context.Context, pool *pgxpool.Pool, req createKeyRequest, key
 	})
 }
 
-func Identity(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(model.Identity{Agent: p.agent, Admin: p.admin, Lead: p.lead})
+func Identity(authMode string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := principalFromContext(r.Context())
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(model.Identity{Agent: p.agent, Admin: p.admin, Lead: p.lead, ChatAuth: authMode})
+	}
 }
 
 type principal struct {
