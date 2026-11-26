@@ -674,7 +674,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOU
 
 ### Dashboard
 
-Open `http://YOUR_HOST:4444` in a browser to track recent messages, agent activity, and searchable project memory. Select **Use API key** when authentication is required. The dashboard uses that identity for the current page and clears it on reload or disconnect. An admin key reveals enrollment status in the agent roster, including while preparing a cutover on an auth-off bus.
+Open `http://YOUR_HOST:4444` in a browser to track recent messages, agent activity, and searchable project memory. Select **Use API key** when authentication is required. The dashboard uses that identity for the current page and clears it on reload or disconnect. When chat authentication is off, the dashboard shows the full bus even after you verify an agent key. An admin key also reveals enrollment status in the agent roster.
 
 ## Scaling
 

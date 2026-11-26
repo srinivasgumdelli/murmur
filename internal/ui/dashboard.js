@@ -65,11 +65,21 @@ function requestLabel(error, fallback) {
 }
 
 function showIdentity() {
-  byId("access").textContent = identity ? (identity.admin ? "Operator access" : identity.agent) : "Use API key";
+  let label = "Use API key";
+  let note = "Use an agent key to verify your identity, or the admin key to see enrollment status.";
+  if (identity?.admin) {
+    label = "Operator access";
+    note = "Viewing the bus as an administrator. The key is held in this page.";
+  } else if (identity?.chat_auth === "off") {
+    label = "Full bus";
+    note = `Key verified for ${identity.agent}. Chat authentication is off, so this dashboard shows the full bus.`;
+  } else if (identity) {
+    label = identity.agent;
+    note = `Viewing as ${identity.agent}. The key is held in this page.`;
+  }
+  byId("access").textContent = label;
   byId("forget").hidden = !identity;
-  byId("access-note").textContent = identity
-    ? (identity.admin ? "Viewing the bus as an administrator. The key is held in this page." : `Viewing as ${identity.agent}. The key is held in this page.`)
-    : "Use an agent key for its view, or the admin key for the full bus and enrollment status.";
+  byId("access-note").textContent = note;
 }
 
 function setIdentity(credential, actor) {
