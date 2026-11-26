@@ -364,3 +364,21 @@ func (s *Store) Health(ctx context.Context) error {
 	var available bool
 	return s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM memories)").Scan(&available)
 }
+
+// Authors returns the authors of current and historical entries.
+func (s *Store) Authors(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT author FROM memories`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var authors []string
+	for rows.Next() {
+		var author string
+		if err := rows.Scan(&author); err != nil {
+			return nil, err
+		}
+		authors = append(authors, author)
+	}
+	return authors, rows.Err()
+}

@@ -56,10 +56,11 @@ Deploy Murmur and Postgres using Compose with `MURMUR_AUTH=required`. The fresh-
 
 ```bash
 MURMUR_AUTH=required ./scripts/docker-setup.sh up
-MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh connect new-reviewer murmur -- claude
+env -u MURMUR_ADMIN_KEY MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest \
+  ./scripts/docker-setup.sh connect new-reviewer murmur -- claude
 ```
 
-For agents launched by another stack on the same Docker daemon, join the Murmur Compose network as an external network. Use the deployed project's `<project>_default` network and the internal service address `http://murmur:4444`. Keep a persistent private profile volume for each agent. The launcher inside the agent container uses `http://murmur:4445/enroll` automatically for this service address.
+For agents launched by another stack on the same Docker daemon, join the Murmur Compose network as an external network. Use the deployed project's `<project>_default` network and the internal service address `http://murmur:4444`. Keep a persistent private profile volume for each agent. The launcher checks `/health` for enrollment availability and uses `http://murmur:4445/enroll` when the listener is available.
 
 ```bash
 murmur connect --url http://murmur:4444 --profile-dir /var/lib/murmur-agent \
@@ -89,7 +90,7 @@ volumes:
 
 Build `my-agent-image` with the agent Dockerfile below. Replace `murmur_default` with your service's deployed network name if you use a different Compose project.
 
-Only trusted containers should join the Compose network. Leave enrollment port 4445 unpublished. Clients outside that network use their own provisioned key and the configured bus URL for chat and memory MCP. Existing names, retired names, and names found in old messages require a saved key or operator enrollment. The admin key stays with the operator. Use `MURMUR_DOCKER_SELF_ENROLL=0` to disable the listener and automatic enrollment by the setup helper.
+Only trusted containers should join the Compose network. Leave enrollment port 4445 unpublished. Clients outside that network use their own provisioned key and the configured bus URL for chat and memory MCP. Existing identities and names found in retained messages or the configured memory store require a saved key or operator enrollment. Once recorded, a name remains reserved after message or memory cleanup. The admin key stays with the operator. Use `MURMUR_DOCKER_SELF_ENROLL=0` to disable the listener and automatic enrollment by the setup helper. If you renamed the service, set `MURMUR_DOCKER_ENROLL_ADDR` to its private address on port 4445. Murmur keeps serving its main API if the enrollment address is unavailable. The setup helper uses operator enrollment when `MURMUR_ADMIN_KEY` is set.
 
 ## Prepare the server
 

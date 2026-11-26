@@ -70,6 +70,14 @@ func run() error {
 	authMode := getenv("MURMUR_AUTH", "off")
 	messageTTL := getenv("MURMUR_MESSAGE_TTL", "")
 	enrollmentMode := os.Getenv("MURMUR_DOCKER_SELF_ENROLL")
+	switch enrollmentMode {
+	case "", "0", "1", "auto":
+	default:
+		return fmt.Errorf("invalid MURMUR_DOCKER_SELF_ENROLL %q; use 0, 1, or auto", enrollmentMode)
+	}
+	if enrollmentMode == "auto" && authMode != "required" {
+		log.Printf("private enrollment inactive with chat auth %q", authMode)
+	}
 	privateEnroll := enrollmentMode == "1" || (enrollmentMode == "auto" && authMode == "required")
 	if privateEnroll && authMode != "required" {
 		return errors.New("MURMUR_DOCKER_SELF_ENROLL requires MURMUR_AUTH=required")
@@ -122,6 +130,15 @@ func run() error {
 				closeStore()
 			}()
 		}
+		authors, err := store.Authors(ctx)
+		if err == nil {
+			err = schema.ReserveAgentNames(ctx, pool, authors)
+		}
+		if err != nil {
+			log.Printf("private enrollment disabled: preserve memory authors: %v", err)
+			privateEnroll = false
+		}
+
 		memoryService = memory.NewService(store, memory.Config{
 			AuthMode: authMode,
 			TTLDays:  ttlDays,
@@ -131,6 +148,14 @@ func run() error {
 		memoryCheck = memoryService.Health
 		reapMemory = func(ctx context.Context) error {
 			return memoryService.Reap(ctx, time.Duration(keepExpiredDays)*24*time.Hour)
+		}
+	}
+
+	var enrollmentListener net.Listener
+	if privateEnroll {
+		enrollmentListener, err = net.Listen("tcp", getenv("MURMUR_DOCKER_ENROLL_ADDR", ":4445"))
+		if err != nil {
+			log.Printf("private enrollment disabled: %v", err)
 		}
 	}
 
@@ -144,7 +169,7 @@ func run() error {
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
 	mux.HandleFunc("GET /identity", handler.Identity(authMode))
-	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck))
+	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck, enrollmentListener != nil))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
 	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))
 	mux.HandleFunc("/", ui.Handler())
@@ -154,12 +179,7 @@ func run() error {
 		log.Printf("auth mode: %s", authMode)
 	}
 
-	if privateEnroll {
-		// Bind the Compose service address, independently of the public listener.
-		listener, err := net.Listen("tcp", "murmur:4445")
-		if err != nil {
-			return fmt.Errorf("listen for private enrollment: %w", err)
-		}
+	if enrollmentListener != nil {
 		privateServer := &http.Server{
 			Handler:           handler.PrivateEnrollment(pool),
 			ReadHeaderTimeout: 5 * time.Second,
@@ -169,11 +189,11 @@ func run() error {
 		}
 		defer privateServer.Close()
 		go func() {
-			if err := privateServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := privateServer.Serve(enrollmentListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("private enrollment listener: %v", err)
 			}
 		}()
-		log.Printf("private enrollment ready on %s", listener.Addr())
+		log.Printf("private enrollment ready on %s", enrollmentListener.Addr())
 	}
 
 	handler.StartReaper(ctx, pool, messageTTL, reapMemory)

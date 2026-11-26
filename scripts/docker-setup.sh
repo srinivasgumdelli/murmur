@@ -37,16 +37,33 @@ esac
 # Read the effective project and enrollment setting, including .env overrides.
 settings=$("${compose[@]}" config | awk '
     /^name: / { project = $2 }
-    $1 == "MURMUR_DOCKER_SELF_ENROLL:" { mode = $2; gsub(/[^a-z0-9]/, "", mode) }
+    $1 == "MURMUR_DOCKER_SELF_ENROLL:" { mode = $2; sub(/^"/, "", mode); sub(/"$/, "", mode) }
     END { print project, mode }
 ')
 read -r project self_enroll <<< "$settings"
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
 case $self_enroll in
     0|1|auto) ;;
-    *) fail "Set MURMUR_DOCKER_SELF_ENROLL to 0, 1, or auto." ;;
+    *) fail "Invalid MURMUR_DOCKER_SELF_ENROLL value '$self_enroll'. Use 0, 1, or auto." ;;
 esac
 compose+=(-p "$project")
+
+published_port() {
+    local published port
+    published=$("${compose[@]}" port murmur 4444) || return 1
+    port=${published##*:}
+    [[ $port =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$port"
+}
+
+private_enrollment_available() {
+    local port health
+    local capability='"private_enrollment"[[:space:]]*:[[:space:]]*true[[:space:]]*[,}]'
+    [[ $self_enroll != 0 ]] || return 1
+    port=$(published_port 2>/dev/null) || return 1
+    health=$(curl -qfsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null) || return 1
+    [[ $health =~ $capability ]]
+}
 
 if [[ $action == up ]]; then
     [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh up"
@@ -57,9 +74,7 @@ if [[ $action == up ]]; then
     [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export a persistent MURMUR_ADMIN_KEY from your secret store."
     export MURMUR_ADMIN_KEY
     "${compose[@]}" up -d --build
-    published=$("${compose[@]}" port murmur 4444)
-    port=${published##*:}
-    [[ $port =~ ^[0-9]+$ ]] || fail "Could not determine Murmur's published port."
+    port=$(published_port) || fail "Could not determine Murmur's published port."
     health_url=http://127.0.0.1:$port/health
     for ((attempt = 0; attempt < 30; attempt++)); do
         if health=$(curl -qfsS --noproxy '*' --max-time 2 "$health_url" 2>/dev/null); then
@@ -106,10 +121,12 @@ enroll_agent() {
 if [[ $action == enroll ]]; then
     [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh enroll AGENT"
     build_agent_image
-    if [[ -n ${MURMUR_ADMIN_KEY:-} || $self_enroll == 0 ]]; then
+    if [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
         enroll_agent admin
-    else
+    elif private_enrollment_available; then
         enroll_agent private
+    else
+        fail "Private enrollment is unavailable. Export MURMUR_ADMIN_KEY for operator enrollment."
     fi
     exit
 fi
@@ -140,11 +157,17 @@ if [[ $action == connect ]]; then
         args+=(--task "$MURMUR_TASK")
     fi
     args+=(-- "$@")
-    if [[ $self_enroll != 0 ]]; then
+    enrollment_method=
+    if [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
+        enrollment_method="admin"
+    elif private_enrollment_available; then
+        enrollment_method="private"
+    fi
+    if [[ -n $enrollment_method ]]; then
         if ! docker image inspect "$agent_image" >/dev/null 2>&1; then
             build_agent_image >&2
         fi
-        enroll_agent private >&2
+        enroll_agent "$enrollment_method" >&2
     fi
     run+=(-i --mount "type=bind,src=$workdir,dst=/workspace" --workdir /workspace)
     if [[ -t 0 && -t 1 ]]; then
@@ -160,5 +183,6 @@ docker volume inspect "$profile_volume" >/dev/null 2>&1 ||
 exec "${run[@]}" \
     --mount "type=volume,src=$profile_volume,dst=$profile_dir,readonly" \
     --mount "type=volume,src=$state_volume,dst=$state_dir" \
+    -e "MURMUR_DOCKER_SELF_ENROLL=$self_enroll" \
     -e "CODEX_HOME=$state_dir/codex" -e "CLAUDE_CONFIG_DIR=$state_dir/claude" \
     "$agent_image" "${args[@]}"

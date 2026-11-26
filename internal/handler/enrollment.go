@@ -87,10 +87,8 @@ func claimAgent(ctx context.Context, pool *pgxpool.Pool, agent, keyHash string) 
 		// name can no longer race with this check.
 		var reserved bool
 		err = tx.QueryRow(ctx, `SELECT
-			EXISTS (SELECT 1 FROM retired_agent_names WHERE name = $1)
-			OR EXISTS (SELECT 1 FROM api_keys WHERE agent = $1)
-			OR EXISTS (SELECT 1 FROM messages
-				WHERE sender = $1 OR "to" = $1 OR (sender = 'system' AND message = $1 || ' left'))`, agent).Scan(&reserved)
+			EXISTS (SELECT 1 FROM reserved_agent_names WHERE name = $1)
+			OR EXISTS (SELECT 1 FROM api_keys WHERE agent = $1)`, agent).Scan(&reserved)
 		if err != nil {
 			return err
 		}

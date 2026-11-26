@@ -8,6 +8,7 @@ services:
       - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
       # The optional enrollment listener on 4445 stays inside the Docker network.
       - MURMUR_DOCKER_SELF_ENROLL=${MURMUR_DOCKER_SELF_ENROLL:-auto}
+      - MURMUR_DOCKER_ENROLL_ADDR=${MURMUR_DOCKER_ENROLL_ADDR:-murmur:4445}
       - MURMUR_AUTH=${MURMUR_AUTH:-off}
       - MURMUR_ADMIN_KEY=${MURMUR_ADMIN_KEY:-}
       - MURMUR_MEMORY_STORE=${MURMUR_MEMORY_STORE:-postgres}

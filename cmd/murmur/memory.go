@@ -10,7 +10,12 @@ import (
 	"github.com/srinivasgumdelli/murmur/internal/memory/sqlitestore"
 )
 
-func openMemoryStore(ctx context.Context, pool *pgxpool.Pool) (memory.Store, func(), error) {
+type startupMemoryStore interface {
+	memory.Store
+	Authors(context.Context) ([]string, error)
+}
+
+func openMemoryStore(ctx context.Context, pool *pgxpool.Pool) (startupMemoryStore, func(), error) {
 	switch backend := getenv("MURMUR_MEMORY_STORE", "postgres"); backend {
 	case "postgres":
 		store := pgstore.New(pool)

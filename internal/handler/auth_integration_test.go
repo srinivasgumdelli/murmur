@@ -133,6 +133,27 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 			t.Fatal(err)
 		}
 		claim("prior-private-recipient", "another-key", http.StatusConflict)
+		// Simulate an older database containing history from before the trigger.
+		if _, err := pool.Exec(ctx, `
+			ALTER TABLE messages DISABLE TRIGGER message_inserted;
+			INSERT INTO messages (sender, "to", message) VALUES ('former-sender','former-recipient','history');
+			DELETE FROM murmur_schema_migrations WHERE name = 'reserve-message-identities'
+		`); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Apply(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE sender = 'former-sender' OR "to" = 'prior-private-recipient'`); err != nil {
+			t.Fatal(err)
+		}
+		claim("former-sender", "another-key", http.StatusConflict)
+		claim("former-recipient", "another-key", http.StatusConflict)
+		claim("prior-private-recipient", "another-key", http.StatusConflict)
+		if err := schema.ReserveAgentNames(ctx, pool, []string{"former-memory-author"}); err != nil {
+			t.Fatal(err)
+		}
+		claim("former-memory-author", "another-key", http.StatusConflict)
 		do(required, http.MethodDelete, "/agents/private-agent", key, "", http.StatusOK)
 		claim("private-agent", key, http.StatusConflict)
 	})

@@ -33,14 +33,15 @@ const usage = `Usage:
 var scopeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@:/-]{0,127}$`)
 
 type options struct {
-	url           string
-	enrollmentURL string
-	agent         string
-	workspace     string
-	task          string
-	dir           string
-	thread        string
-	hooks         bool
+	url                string
+	enrollmentURL      string
+	discoverEnrollment bool
+	agent              string
+	workspace          string
+	task               string
+	dir                string
+	thread             string
+	hooks              bool
 }
 
 func Run(ctx context.Context, args []string) error {
@@ -116,10 +117,8 @@ func Run(ctx context.Context, args []string) error {
 		return errors.New("Murmur helper refused to provide a credential for a different MCP endpoint")
 	}
 	canEnroll := command == "connect" || command == "enroll"
-	if canEnroll && o.enrollmentURL == "" && os.Getenv("MURMUR_ADMIN_KEY") == "" &&
-		os.Getenv("MURMUR_DOCKER_SELF_ENROLL") != "0" && c.base == "http://murmur:4444" && inContainer() {
-		o.enrollmentURL = "http://murmur:4445"
-	}
+	o.discoverEnrollment = canEnroll && os.Getenv("MURMUR_DOCKER_SELF_ENROLL") != "0" &&
+		c.base == "http://murmur:4444" && inContainer()
 	var key string
 	if command == "enroll" && os.Getenv("MURMUR_KEY") != "" {
 		err = importCredential(ctx, c, o, os.Getenv("MURMUR_KEY"))

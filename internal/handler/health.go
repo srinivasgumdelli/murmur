@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func Health(pool *pgxpool.Pool, startTime time.Time, memoryCheck func(context.Context) error) http.HandlerFunc {
+func Health(pool *pgxpool.Pool, startTime time.Time, memoryCheck func(context.Context) error, privateEnrollment bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var msgCount int
 		var agentCount int
@@ -23,6 +23,9 @@ func Health(pool *pgxpool.Pool, startTime time.Time, memoryCheck func(context.Co
 			"messages": msgCount,
 			"agents":   agentCount,
 			"uptime":   uptime.String(),
+		}
+		if privateEnrollment {
+			result["private_enrollment"] = true
 		}
 		status := http.StatusOK
 		if memoryCheck != nil {

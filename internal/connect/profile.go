@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -95,6 +96,17 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 	}
 
 	admin := os.Getenv("MURMUR_ADMIN_KEY")
+	if allowEnroll && admin == "" && o.enrollmentURL == "" && o.discoverEnrollment {
+		var capabilities struct {
+			PrivateEnrollment bool `json:"private_enrollment"`
+		}
+		if err := c.request(ctx, http.MethodGet, "/health", "", nil, &capabilities); err != nil {
+			return "", fmt.Errorf("check private enrollment availability: %w", err)
+		}
+		if capabilities.PrivateEnrollment {
+			o.enrollmentURL = "http://murmur:4445"
+		}
+	}
 	if !allowEnroll || (admin == "" && o.enrollmentURL == "") {
 		return "", fmt.Errorf("no saved credential for %q; enroll from a trusted launcher or supply its MURMUR_KEY", o.agent)
 	}

@@ -435,3 +435,21 @@ func (s *Store) Stats(ctx context.Context, at time.Time) (memory.Stats, error) {
 	}
 	return stats, tx.Commit(ctx)
 }
+
+// Authors returns the authors of current and historical entries.
+func (s *Store) Authors(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT DISTINCT author FROM memories`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var authors []string
+	for rows.Next() {
+		var author string
+		if err := rows.Scan(&author); err != nil {
+			return nil, err
+		}
+		authors = append(authors, author)
+	}
+	return authors, rows.Err()
+}

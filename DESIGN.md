@@ -130,7 +130,7 @@ List registered agents.
 
 ### Agent enrollment and identity
 
-Authenticated Compose deployments enable private enrollment on unpublished port 4445 by default. `POST /enroll` on that listener accepts a new agent name and a SHA-256 digest. Murmur claims the name and binds the digest in one transaction. Retrying with the same digest confirms an earlier claim. The launcher keeps the raw key in its private profile, and the public listener uses the existing authentication middleware.
+Authenticated Compose deployments enable private enrollment on unpublished port 4445 by default. `POST /enroll` on that listener accepts a new agent name and a SHA-256 digest. Murmur claims the name and binds the digest in one transaction. Retrying with the same digest confirms an earlier claim. The launcher keeps the raw key in its private profile. The public listener advertises enrollment readiness in `/health` and uses the existing authentication middleware for chat and MCP. Murmur reserves names from message history and memory authorship before accepting claims.
 
 
 | Endpoint | Behavior |

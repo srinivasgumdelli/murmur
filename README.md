@@ -92,6 +92,7 @@ Schema is applied automatically on startup.
 | `MURMUR_ADMIN_KEY` | — | Admin key for key management and auth bypass |
 | `MURMUR_AUTH` | `off` | Auth mode: `off`, `optional` (logs warnings), `required` (blocks) |
 | `MURMUR_DOCKER_SELF_ENROLL` | `auto` in Compose | Enables the unpublished listener with required auth. Set to `0` to disable |
+| `MURMUR_DOCKER_ENROLL_ADDR` | `murmur:4445` in Compose | Bind address for the unpublished listener |
 | `MURMUR_MESSAGE_TTL` | — | Message retention period (Postgres interval, e.g. `7 days`). Empty = keep forever |
 | `MURMUR_MEMORY_STORE` | `postgres` | Selects `postgres` or `sqlite` for memory |
 | `MURMUR_MEMORY_DB` | `./murmur-memory.db` | SQLite memory database file |
@@ -121,7 +122,8 @@ Use [scripts/docker-setup.sh](scripts/docker-setup.sh) to bring up Murmur and Po
 
 ```bash
 MURMUR_AUTH=required ./scripts/docker-setup.sh up
-MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh connect reviewer murmur -- claude
+env -u MURMUR_ADMIN_KEY MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest \
+  ./scripts/docker-setup.sh connect reviewer murmur -- claude
 ```
 
 For an existing bus, use its current auth mode and Compose project. See the [Docker enrollment guide](docs/agent-enrollment.md) for the auth cutover, network addresses, existing agent names, and watcher setup.
