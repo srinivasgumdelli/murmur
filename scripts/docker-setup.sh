@@ -106,9 +106,22 @@ build_agent_image() {
         --build-arg "AGENT_GID=${AGENT_GID:-1000}" "$root"
 }
 
+launcher_supports_private_enrollment() {
+    # Capture instead of piping to grep -q, which can fail under pipefail.
+    local help
+    help=$(docker run --rm --entrypoint /usr/local/bin/murmur "$agent_image" enroll -h 2>&1) || true
+    [[ $help == *-enrollment-url* ]]
+}
+
 enroll_agent() {
     local enrollment=( "${run[@]}" )
     local credential=(enroll --url "$bus_url" --agent "$agent" --profile-dir "$profile_dir")
+    if [[ $1 == private ]] && ! launcher_supports_private_enrollment; then
+        # Images built before private enrollment carry a launcher without it.
+        [[ -n ${MURMUR_AGENT_BASE_IMAGE:-} ]] ||
+            fail "$agent_image has a launcher without private enrollment. Set MURMUR_AGENT_BASE_IMAGE to rebuild it, or export MURMUR_ADMIN_KEY."
+        build_agent_image >&2
+    fi
     if [[ $1 != private ]]; then
         [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export MURMUR_ADMIN_KEY to enroll an agent."
         export MURMUR_ADMIN_KEY

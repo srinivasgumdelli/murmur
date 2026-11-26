@@ -365,9 +365,9 @@ func (s *Store) Health(ctx context.Context) error {
 	return s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM memories)").Scan(&available)
 }
 
-// Authors returns the authors of current and historical entries.
+// Authors returns the authors and promoting leads of current and historical entries.
 func (s *Store) Authors(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT author FROM memories`)
+	rows, err := s.db.QueryContext(ctx, `SELECT author FROM memories UNION SELECT promoted_by FROM memories WHERE promoted_by IS NOT NULL AND promoted_by <> ''`)
 	if err != nil {
 		return nil, err
 	}

@@ -21,7 +21,12 @@ import (
 type createKeyRequest struct {
 	Agent  string `json:"agent"`
 	Enroll bool   `json:"enroll,omitempty"`
+	// Reclaim revokes the keys of a self-enrolled agent before issuing one,
+	// for an operator taking back a name claimed on the private listener.
+	Reclaim bool `json:"reclaim,omitempty"`
 }
+
+var errSelfEnrolled = errors.New("agent claimed its name through private enrollment")
 
 type createKeyResponse struct {
 	Key   string `json:"key"`
@@ -80,6 +85,10 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 		}
 
 		err = issueKey(r.Context(), pool, req, hashKey(key))
+		if errors.Is(err, errSelfEnrolled) {
+			http.Error(w, "agent "+req.Agent+" claimed its name through private enrollment; send reclaim:true to revoke its keys and issue a new one", http.StatusConflict)
+			return
+		}
 		if err != nil {
 			log.Printf("insert key: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -93,20 +102,34 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 }
 
 func issueKey(ctx context.Context, pool *pgxpool.Pool, req createKeyRequest, keyHash string) error {
-	const insertKey = `INSERT INTO api_keys (key_hash, agent) VALUES ($1, $2)`
-	if !req.Enroll {
-		_, err := pool.Exec(ctx, insertKey, keyHash, req.Agent)
-		return err
-	}
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		// An enrolled identity keeps its existing role, groups and session.
-		_, err := tx.Exec(ctx, `INSERT INTO agents (name, session_id, role, status)
-			VALUES ($1, gen_random_uuid()::text, 'coding-agent', 'offline')
-			ON CONFLICT (name) DO NOTHING`, req.Agent)
-		if err != nil {
+		if req.Enroll {
+			// An enrolled identity keeps its existing role, groups and session.
+			if _, err := tx.Exec(ctx, `INSERT INTO agents (name, session_id, role, status)
+				VALUES ($1, gen_random_uuid()::text, 'coding-agent', 'offline')
+				ON CONFLICT (name) DO NOTHING`, req.Agent); err != nil {
+				return err
+			}
+		}
+		// A self-enrolled name may belong to whoever reached the private
+		// listener first. Never add a second key to it silently.
+		var selfEnrolled bool
+		err := tx.QueryRow(ctx, `SELECT self_enrolled FROM agents WHERE name = $1 FOR UPDATE`, req.Agent).Scan(&selfEnrolled)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		_, err = tx.Exec(ctx, insertKey, keyHash, req.Agent)
+		if selfEnrolled {
+			if !req.Reclaim {
+				return errSelfEnrolled
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM api_keys WHERE agent = $1`, req.Agent); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `UPDATE agents SET self_enrolled = false WHERE name = $1`, req.Agent); err != nil {
+				return err
+			}
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO api_keys (key_hash, agent) VALUES ($1, $2)`, keyHash, req.Agent)
 		return err
 	})
 }

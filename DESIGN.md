@@ -130,12 +130,12 @@ List registered agents.
 
 ### Agent enrollment and identity
 
-Authenticated Compose deployments enable private enrollment on unpublished port 4445 by default. `POST /enroll` on that listener accepts a new agent name and a SHA-256 digest. Murmur claims the name and binds the digest in one transaction. Retrying with the same digest confirms an earlier claim. The launcher keeps the raw key in its private profile. The public listener advertises enrollment readiness and the listener port in `/health` while the listener is serving, and uses the existing authentication middleware for chat and MCP. Murmur reserves message senders, names in join and leave notices, deleted agents, and memory authors (at startup and on each write) before accepting claims. Message recipients are not reserved.
+Authenticated Compose deployments enable private enrollment on unpublished port 4445 by default. `POST /enroll` on that listener accepts a new agent name and a SHA-256 digest. Murmur claims the name and binds the digest in one transaction. Retrying with the same digest confirms an earlier claim. The launcher keeps the raw key in its private profile. The public listener advertises enrollment readiness and the listener port in `/health` while the listener is serving, and uses the existing authentication middleware for chat and MCP. Murmur reserves message senders, names in join and leave notices, deleted agents, and memory authors (at startup and on each write) before accepting claims. Message recipients are not reserved. Names are compared without letter case, and the listener accepts at most 20 claims per 10 minutes. Claimed rows carry `agents.self_enrolled`: admin key issuance for them returns 409 unless the request sets `reclaim`, which revokes the claimant's keys, and admin promotion to `lead` returns 409 unless it sets `confirm_self_enrolled`.
 
 
 | Endpoint | Behavior |
 | --- | --- |
-| `POST /keys` | Requires the admin key. Returns a new agent key once and stores its hash. Send `{"agent":"reviewer","enroll":true}` to create the agent if needed and issue its key in one transaction. Enrollment preserves existing agent metadata. |
+| `POST /keys` | Requires the admin key. Returns a new agent key once and stores its hash. Send `{"agent":"reviewer","enroll":true}` to create the agent if needed and issue its key in one transaction. Enrollment preserves existing agent metadata. For a self-enrolled agent, returns 409 unless `"reclaim":true`, which revokes its existing keys first. |
 | `GET /identity` | Requires a valid Murmur key in every auth mode. Returns the verified agent identity and whether the key has admin or lead access, plus the configured chat auth mode in `chat_auth`. |
 | `POST /agents/{name}/heartbeat?inbox=false` | Records launcher presence and returns the agent without fetching or changing the delivery status of pending messages. |
 

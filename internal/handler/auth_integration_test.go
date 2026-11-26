@@ -99,7 +99,8 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	}
 
 	t.Run("private enrollment", func(t *testing.T) {
-		private := PrivateEnrollment(pool)
+		// A generous limiter keeps this test's many claims under the limit.
+		private := privateEnrollment(pool, &claimLimiter{limit: 1000, window: time.Minute, now: time.Now})
 		pair := func(name, key string) string {
 			return fmt.Sprintf(`{"agent":%q,"key_hash":%q}`, name, hashKey(key))
 		}
@@ -118,6 +119,7 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		}
 		const key = "new-agent-private-key"
 		claim("system", key, http.StatusBadRequest)
+		claim("System", key, http.StatusBadRequest)
 		do(private, http.MethodGet, "/identity", key, "", http.StatusNotFound)
 		do(required, http.MethodPost, "/enroll", admin, pair("private-agent", key), http.StatusNotFound)
 		claim("private-agent", key, http.StatusOK)
@@ -142,7 +144,7 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 				('former-sender', 'former-recipient', 'history'),
 				('system', NULL, 'former-joined joined — worked on docs'),
 				('system', NULL, 'former-left left');
-			DELETE FROM murmur_schema_migrations WHERE name = 'reserve-message-identities'
+			DELETE FROM murmur_schema_migrations WHERE name = 'reserve-message-identities-v2'
 		`); err != nil {
 			t.Fatal(err)
 		}
@@ -164,6 +166,42 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 			t.Fatal(err)
 		}
 		claim("former-memory-author", "another-key", http.StatusConflict)
+		// Names differing only in letter case are the same identity.
+		claim("Private-Agent", "case-key", http.StatusConflict)
+		claim("FUTURE-RECIPIENT", "case-key", http.StatusConflict)
+
+		// Admin key issuance and lead promotion never silently adopt a claim.
+		const squatter = "squatter-key"
+		claim("contested", squatter, http.StatusOK)
+		request(required, "/keys", admin, `{"agent":"contested","enroll":true}`, http.StatusConflict)
+		request(required, "/keys", admin, `{"agent":"contested"}`, http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"contested","role":"worker"}`, http.StatusCreated)
+		do(required, http.MethodGet, "/identity", squatter, "", http.StatusOK)
+		reclaimed := request(required, "/keys", admin, `{"agent":"contested","enroll":true,"reclaim":true}`, http.StatusCreated)
+		var out struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(reclaimed.Body.Bytes(), &out); err != nil || out.Key == "" {
+			t.Fatalf("reclaim response: %s (%v)", reclaimed.Body, err)
+		}
+		do(required, http.MethodGet, "/identity", squatter, "", http.StatusUnauthorized)
+		do(required, http.MethodGet, "/identity", out.Key, "", http.StatusOK)
+		// After a reclaim the name is operator-owned, so promotion needs no confirmation.
+		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusCreated)
+
+		const vouched = "vouched-key"
+		claim("vouched", vouched, http.StatusOK)
+		request(required, "/agents", admin, `{"name":"vouched","role":"lead","confirm_self_enrolled":true}`, http.StatusCreated)
+		identity := do(required, http.MethodGet, "/identity", vouched, "", http.StatusOK)
+		if !strings.Contains(identity.Body.String(), `"lead":true`) {
+			t.Fatalf("confirmed self-enrolled agent is not lead: %s", identity.Body)
+		}
+		request(required, "/keys", admin, `{"agent":"vouched","enroll":true}`, http.StatusCreated)
+		for _, name := range []string{"contested", "vouched"} {
+			do(required, http.MethodDelete, "/agents/"+name, admin, "", http.StatusOK)
+		}
+
 		do(required, http.MethodDelete, "/agents/private-agent", key, "", http.StatusOK)
 		claim("private-agent", key, http.StatusConflict)
 	})

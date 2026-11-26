@@ -87,17 +87,22 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_agent ON api_keys (agent);
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS groups TEXT[] DEFAULT '{}';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS memory_lead BOOLEAN NOT NULL DEFAULT false;
+-- Set for names claimed on the unauthenticated private enrollment listener.
+-- Admin key issuance and lead promotion require explicit confirmation for them.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS self_enrolled BOOLEAN NOT NULL DEFAULT false;
 CREATE TABLE IF NOT EXISTS murmur_schema_migrations (name TEXT PRIMARY KEY);
 DO $$
 BEGIN
-    INSERT INTO murmur_schema_migrations VALUES ('reserve-message-identities')
+    -- v2 also covers older system notice formats. The inserts are idempotent,
+    -- so databases that ran the first version are safe to backfill again.
+    INSERT INTO murmur_schema_migrations VALUES ('reserve-message-identities-v2')
     ON CONFLICT DO NOTHING;
     IF FOUND THEN
         INSERT INTO reserved_agent_names (name)
         SELECT identity.name FROM (
             SELECT sender AS name FROM messages
             UNION
-            SELECT substring(message FROM '^([a-zA-Z0-9][a-zA-Z0-9._-]{0,127}) (?:left$|joined\M)') FROM messages WHERE sender = 'system'
+            SELECT substring(message FROM '^([a-zA-Z0-9][a-zA-Z0-9._-]{0,127}) (?:left$|joined\M|went offline|removed \(inactive\))') FROM messages WHERE sender = 'system'
         ) identity
         WHERE identity.name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$'
         ON CONFLICT DO NOTHING;

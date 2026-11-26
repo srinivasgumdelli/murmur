@@ -89,6 +89,10 @@ func (c *client) enroll(ctx context.Context, agent, adminKey string) (string, er
 	err := c.request(ctx, http.MethodPost, "/keys", adminKey, map[string]any{
 		"agent": agent, "enroll": true,
 	}, &result)
+	var status *statusError
+	if errors.As(err, &status) && status.code == http.StatusConflict {
+		return "", fmt.Errorf("agent %q claimed its name through private enrollment. If that was your agent, use its saved profile. Otherwise revoke its keys with POST /keys {\"agent\":%q,\"enroll\":true,\"reclaim\":true}", agent, agent)
+	}
 	if err != nil {
 		return "", fmt.Errorf("enroll %s: %w", agent, err)
 	}

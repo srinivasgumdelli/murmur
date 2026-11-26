@@ -18,6 +18,9 @@ type registerAgentRequest struct {
 	Description  *string  `json:"description"`
 	Capabilities []string `json:"capabilities"`
 	Groups       []string `json:"groups"`
+	// ConfirmSelfEnrolled lets an admin promote a self-enrolled agent to lead
+	// after checking who holds its key. It clears the self-enrolled mark.
+	ConfirmSelfEnrolled bool `json:"confirm_self_enrolled,omitempty"`
 }
 
 func Agents(pool *pgxpool.Pool) http.HandlerFunc {
@@ -73,11 +76,18 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		 description = CASE WHEN $6 OR NOT agents.memory_lead THEN $3 ELSE agents.description END,
 		 capabilities = CASE WHEN $6 OR NOT agents.memory_lead THEN $4 ELSE agents.capabilities END,
 		 groups = CASE WHEN $6 OR NOT agents.memory_lead THEN $5 ELSE agents.groups END,
+		 self_enrolled = CASE WHEN $6 AND $2 = 'lead' AND $8 THEN false ELSE agents.self_enrolled END,
 		 status = 'online', last_seen = now()
-		 WHERE $6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2)
+		 WHERE ($6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2))
+		   AND NOT ($6 AND $2 = 'lead' AND agents.self_enrolled AND NOT $8)
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name,
+		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	if errors.Is(err, pgx.ErrNoRows) && actor.admin && req.Role == "lead" {
+		// The lead guard is the only way an admin upsert matches no row.
+		http.Error(w, "agent "+req.Name+" claimed its name through private enrollment; check who holds its key, then send confirm_self_enrolled:true to make it a lead, or reclaim it with POST /keys", http.StatusConflict)
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "forbidden: a memory lead can rejoin with its own key and assigned role, or be registered by an admin", http.StatusForbidden)
 		return

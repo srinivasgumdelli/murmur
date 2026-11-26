@@ -157,8 +157,12 @@ func run() error {
 
 	var enrollmentListener net.Listener
 	if privateEnroll {
-		enrollmentListener, err = listenPrivateEnrollment(getenv("MURMUR_DOCKER_ENROLL_ADDR", "127.0.0.1:4445"))
-		if err != nil {
+		// No default address: Docker Desktop forwards host.docker.internal to
+		// host loopback, so even 127.0.0.1 is reachable from every container.
+		// Compose sets the service address on its private network.
+		if addr := os.Getenv("MURMUR_DOCKER_ENROLL_ADDR"); addr == "" {
+			log.Printf("private enrollment disabled: set MURMUR_DOCKER_ENROLL_ADDR to an address only trusted containers can reach")
+		} else if enrollmentListener, err = listenPrivateEnrollment(addr); err != nil {
 			log.Printf("private enrollment disabled: %v", err)
 		}
 	}
@@ -214,14 +218,14 @@ func run() error {
 }
 
 // listenPrivateEnrollment refuses wildcard addresses. The enrollment endpoint
-// is unauthenticated, so it must bind to loopback or a named private network.
+// is unauthenticated, so it must bind to a named private network address.
 func listenPrivateEnrollment(addr string) (net.Listener, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q: %w", addr, err)
 	}
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
-		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q binds every interface; use 127.0.0.1:4445 or the Compose service name", addr)
+		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q binds every interface; use the Compose service name, such as murmur:4445", addr)
 	}
 	return net.Listen("tcp", addr)
 }
