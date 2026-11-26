@@ -1,291 +1,104 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Murmur</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0a0a0a; color: #e0e0e0; min-height: 100vh; }
-
-  header { padding: 20px 24px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; justify-content: space-between; }
-  header h1 { font-size: 18px; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
-  .status { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #888; }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #333; }
-  .status-dot.connected { background: #22c55e; }
-  .status-dot.error { background: #ef4444; }
-
-  .layout { display: grid; grid-template-columns: 1fr 280px; height: calc(100vh - 100px); }
-
-  .feed { overflow-y: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 2px; }
-  .feed::-webkit-scrollbar { width: 6px; }
-  .feed::-webkit-scrollbar-thumb { background: #222; border-radius: 3px; }
-
-  .msg { padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.5; transition: background 0.2s; }
-  .msg:hover { background: #111; }
-  .msg-header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
-  .msg-sender { font-weight: 600; color: #fff; }
-  .msg-channel { font-size: 11px; color: #555; background: #161616; padding: 1px 6px; border-radius: 3px; }
-  .msg-to { font-size: 11px; color: #a78bfa; }
-  .msg-reply { font-size: 11px; color: #f472b6; cursor: pointer; }
-  .msg-session { font-size: 10px; color: #444; font-family: 'SF Mono', 'Cascadia Code', monospace; }
-  .msg-status { font-size: 10px; padding: 1px 5px; border-radius: 3px; }
-  .msg-status.sent { color: #888; background: #1a1a1a; }
-  .msg-status.delivered { color: #60a5fa; background: #172554; }
-  .msg-status.acked { color: #22c55e; background: #14532d; }
-  .msg-time { font-size: 11px; color: #444; margin-left: auto; font-variant-numeric: tabular-nums; }
-  .msg-body { color: #ccc; word-break: break-word; }
-  .msg-meta { font-size: 11px; color: #555; margin-top: 2px; font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace; }
-  .msg.new { animation: flash 0.6s ease-out; }
-  @keyframes flash { from { background: #1a1a2e; } to { background: transparent; } }
-
-  .sidebar { border-left: 1px solid #1a1a1a; padding: 20px; overflow-y: auto; }
-  .sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: #555; margin-bottom: 12px; }
-  .sidebar section { margin-bottom: 28px; }
-
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .stat { background: #111; border-radius: 8px; padding: 12px; }
-  .stat-value { font-size: 22px; font-weight: 600; color: #fff; font-variant-numeric: tabular-nums; }
-  .stat-label { font-size: 11px; color: #555; margin-top: 2px; }
-
-  .agent-list { display: flex; flex-direction: column; gap: 8px; }
-  .agent { background: #111; border-radius: 8px; padding: 10px 12px; }
-  .agent-name { font-weight: 600; color: #fff; font-size: 13px; }
-  .agent-role { font-size: 11px; color: #888; }
-  .agent-caps { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-  .agent-cap { font-size: 10px; color: #666; background: #1a1a1a; padding: 1px 6px; border-radius: 3px; }
-  .agent-seen { font-size: 10px; color: #444; margin-top: 4px; }
-
-  .empty { color: #333; font-size: 13px; text-align: center; padding: 40px 20px; }
-
-  .agent-bar { padding: 10px 24px; border-bottom: 1px solid #1a1a1a; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .agent-bar-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: #444; }
-  .agent-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 10px; border-radius: 12px; background: #111; border: 1px solid #1a1a1a; }
-  .agent-pill .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-  .agent-pill .dot.online { background: #22c55e; }
-  .agent-pill .dot.offline { background: #555; }
-  .agent-pill .pill-name { color: #ccc; font-weight: 500; }
-  .agent-pill .pill-role { color: #555; font-size: 10px; }
-  .agent-pill .pill-session { color: #333; font-size: 9px; font-family: 'SF Mono', monospace; }
-
-  .msg-flow { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; }
-  .msg-flow .arrow { color: #555; }
-
-  .channels { display: flex; flex-wrap: wrap; gap: 4px; }
-  .ch { font-size: 11px; color: #888; background: #161616; padding: 2px 8px; border-radius: 3px; cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
-  .ch:hover { border-color: #333; color: #ccc; }
-  .ch.active { border-color: #a78bfa; color: #a78bfa; }
-
-  @media (max-width: 700px) {
-    .layout { grid-template-columns: 1fr; }
-    .sidebar { border-left: none; border-top: 1px solid #1a1a1a; }
-  }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Murmur Dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
 </head>
 <body>
-  <header>
-    <h1>murmur</h1>
-    <div class="status">
-      <span id="status-text">connecting</span>
-      <span class="status-dot" id="status-dot"></span>
+  <header class="masthead">
+    <div class="frame masthead-row">
+      <div class="brand"><span class="mark" aria-hidden="true">M</span><span>Murmur</span></div>
+      <div class="header-actions">
+        <span id="status" class="status" role="status">Connecting</span>
+        <button id="access" class="button button-dark" type="button" aria-controls="access-panel" aria-expanded="false">Use API key</button>
+      </div>
     </div>
   </header>
-  <div class="agent-bar">
-    <span class="agent-bar-label">Online</span>
-    <div id="agent-pills"></div>
-  </div>
-  <div class="layout">
-    <div class="feed" id="feed">
-      <div class="empty" id="empty-state">waiting for messages...</div>
-    </div>
-    <div class="sidebar">
-      <section>
-        <h2>Health</h2>
-        <div class="stats">
-          <div class="stat"><div class="stat-value" id="stat-messages">-</div><div class="stat-label">messages</div></div>
-          <div class="stat"><div class="stat-value" id="stat-agents">-</div><div class="stat-label">agents</div></div>
-          <div class="stat"><div class="stat-value" id="stat-uptime">-</div><div class="stat-label">uptime</div></div>
-          <div class="stat"><div class="stat-value" id="stat-stream">0</div><div class="stat-label">live events</div></div>
+  <main class="frame">
+    <section id="access-panel" class="access-panel surface" hidden aria-labelledby="access-title">
+      <div>
+        <h2 id="access-title">Dashboard access</h2>
+        <p id="access-note">Use an agent key for its view, or the admin key for the full bus and enrollment status.</p>
+        <p id="access-error" class="error" role="alert" hidden></p>
+      </div>
+      <form id="key-form">
+        <label for="key">Murmur API key</label>
+        <div class="form-row">
+          <input id="key" type="password" autocomplete="off" spellcheck="false" required>
+          <button class="button button-primary" type="submit">Connect</button>
+          <button id="forget" class="button" type="button" hidden>Disconnect</button>
         </div>
-      </section>
-      <section>
-        <h2>Channels</h2>
-        <div class="channels" id="channels">
-          <span class="ch active" data-channel="*">all</span>
+      </form>
+    </section>
+
+    <div class="page-title">
+      <div>
+        <h1>Bus overview</h1>
+        <p>Messages, connected agents, and shared project memory.</p>
+      </div>
+      <button id="refresh" class="button" type="button">Refresh</button>
+    </div>
+    <div class="metrics" aria-label="Bus summary">
+      <div class="metric surface"><span>Messages stored</span><strong id="message-count">—</strong><small id="message-detail">Message history</small></div>
+      <div class="metric surface"><span>Active agents</span><strong id="agent-count">—</strong><small id="agent-detail">Recent heartbeats</small></div>
+      <div class="metric surface"><span>Memory entries</span><strong id="memory-count">—</strong><small id="memory-detail">Checking store</small></div>
+    </div>
+
+    <section class="surface workspace" aria-label="Activity">
+      <nav class="tabs" role="tablist" aria-label="Dashboard sections">
+        <button id="messages-tab" type="button" role="tab" aria-selected="true" aria-controls="messages-panel" data-tab="messages">Messages</button>
+        <button id="agents-tab" type="button" role="tab" aria-selected="false" aria-controls="agents-panel" tabindex="-1" data-tab="agents">Agents</button>
+        <button id="memory-tab" type="button" role="tab" aria-selected="false" aria-controls="memory-panel" tabindex="-1" data-tab="memory">Memory</button>
+      </nav>
+
+      <div id="messages-panel" class="panel" role="tabpanel" aria-labelledby="messages-tab">
+        <div class="panel-heading">
+          <div><h2>Recent messages</h2><p id="message-summary">Loading history</p></div>
+          <label class="filter">Channel
+            <select id="channel"><option value="">All channels</option></select>
+          </label>
         </div>
-      </section>
-      <section>
-        <h2>Agents</h2>
-        <div class="agent-list" id="agents"></div>
-      </section>
-    </div>
-  </div>
-<script>
-const feed = document.getElementById('feed');
-const emptyState = document.getElementById('empty-state');
-const statusDot = document.getElementById('status-dot');
-const statusText = document.getElementById('status-text');
-const channelsEl = document.getElementById('channels');
-let eventCount = 0;
-let activeChannel = '*';
-let knownChannels = new Set();
+        <div id="messages" class="message-list"></div>
+      </div>
 
-const senderColors = {};
-const palette = ['#60a5fa','#f472b6','#34d399','#fbbf24','#a78bfa','#fb923c','#22d3ee','#e879f9'];
-let colorIdx = 0;
-function senderColor(name) {
-  if (!senderColors[name]) senderColors[name] = palette[colorIdx++ % palette.length];
-  return senderColors[name];
-}
+      <div id="agents-panel" class="panel" role="tabpanel" aria-labelledby="agents-tab" hidden>
+        <div class="panel-heading">
+          <div><h2>Agent roster</h2><p id="agent-summary">Loading agents</p></div>
+          <label class="filter">Find an agent
+            <input id="agent-query" type="search" placeholder="Name, role, or group">
+          </label>
+        </div>
+        <div id="agents"></div>
+      </div>
 
-function formatTime(ts) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-}
-
-function renderMsg(msg) {
-  emptyState.style.display = 'none';
-  const div = document.createElement('div');
-  div.className = 'msg new';
-  div.dataset.channel = msg.channel;
-
-  if (activeChannel !== '*' && msg.channel !== activeChannel) div.style.display = 'none';
-
-  let meta = '';
-  if (msg.metadata && Object.keys(msg.metadata).length > 0) {
-    meta = `<div class="msg-meta">${JSON.stringify(msg.metadata)}</div>`;
-  }
-  let replyTag = msg.reply_to ? `<span class="msg-reply">re: #${msg.reply_to}</span>` : '';
-  let sessionTag = msg.session_id ? `<span class="msg-session">${msg.session_id.slice(0,8)}</span>` : '';
-  let statusTag = msg.status ? `<span class="msg-status ${msg.status}">${msg.status}</span>` : '';
-
-  let flowHtml;
-  if (msg.to) {
-    flowHtml = `<span class="msg-flow"><span style="color:${senderColor(msg.sender)}">${msg.sender}</span><span class="arrow">&rarr;</span><span style="color:${senderColor(msg.to)}">${msg.to}</span></span>`;
-  } else {
-    flowHtml = `<span class="msg-sender" style="color:${senderColor(msg.sender)}">${msg.sender}</span>`;
-  }
-
-  div.innerHTML = `
-    <div class="msg-header">
-      ${flowHtml}
-      ${sessionTag}
-      <span class="msg-channel">#${msg.channel}</span>
-      ${replyTag}
-      ${statusTag}
-      <span class="msg-time">${formatTime(msg.created_at)}</span>
-    </div>
-    <div class="msg-body">${escapeHtml(msg.message)}</div>
-    ${meta}
-  `;
-  feed.appendChild(div);
-  feed.scrollTop = feed.scrollHeight;
-
-  if (!knownChannels.has(msg.channel)) {
-    knownChannels.add(msg.channel);
-    const ch = document.createElement('span');
-    ch.className = 'ch';
-    ch.dataset.channel = msg.channel;
-    ch.textContent = msg.channel;
-    ch.addEventListener('click', () => filterChannel(msg.channel));
-    channelsEl.appendChild(ch);
-  }
-}
-
-function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s;
-  return div.innerHTML;
-}
-
-function filterChannel(ch) {
-  activeChannel = ch;
-  channelsEl.querySelectorAll('.ch').forEach(el => {
-    el.classList.toggle('active', el.dataset.channel === ch);
-  });
-  feed.querySelectorAll('.msg').forEach(el => {
-    el.style.display = (ch === '*' || el.dataset.channel === ch) ? '' : 'none';
-  });
-}
-
-channelsEl.querySelector('[data-channel="*"]').addEventListener('click', () => filterChannel('*'));
-
-function connectSSE() {
-  const es = new EventSource('/messages/stream?channel=');
-  es.addEventListener('message', e => {
-    const msg = JSON.parse(e.data);
-    renderMsg(msg);
-    eventCount++;
-    document.getElementById('stat-stream').textContent = eventCount;
-  });
-  es.addEventListener('open', () => {
-    statusDot.className = 'status-dot connected';
-    statusText.textContent = 'live';
-  });
-  es.addEventListener('error', () => {
-    statusDot.className = 'status-dot error';
-    statusText.textContent = 'reconnecting';
-  });
-}
-
-async function loadHistory() {
-  try {
-    const res = await fetch('/messages?channel=&limit=100&after=0');
-    const data = await res.json();
-    data.messages.forEach(renderMsg);
-  } catch(e) {}
-}
-
-async function loadAgents() {
-  try {
-    const res = await fetch('/agents');
-    const agents = await res.json();
-
-    // Update agent pills bar
-    const pills = document.getElementById('agent-pills');
-    pills.innerHTML = agents.length === 0 ? '<span style="color:#333;font-size:12px">none</span>' : '';
-    agents.forEach(a => {
-      const pill = document.createElement('span');
-      pill.className = 'agent-pill';
-      pill.innerHTML = `<span class="dot ${a.status || 'offline'}"></span><span class="pill-name" style="color:${senderColor(a.name)}">${a.name}</span><span class="pill-role">${a.role}</span><span class="pill-session">${a.session_id ? a.session_id.slice(0,8) : ''}</span>`;
-      pills.appendChild(pill);
-    });
-
-    // Update sidebar agent list
-    const el = document.getElementById('agents');
-    el.innerHTML = agents.length === 0 ? '<div class="empty">no agents registered</div>' : '';
-    agents.forEach(a => {
-      const div = document.createElement('div');
-      div.className = 'agent';
-      const caps = (a.capabilities || []).map(c => `<span class="agent-cap">${c}</span>`).join('');
-      div.innerHTML = `
-        <div class="agent-name" style="color:${senderColor(a.name)}">${a.name} <span class="msg-session">${a.session_id ? a.session_id.slice(0,8) : ''}</span></div>
-        <div class="agent-role">${a.role}</div>
-        <div class="agent-caps">${caps}</div>
-        <div class="agent-seen">seen ${formatTime(a.last_seen)}</div>
-      `;
-      el.appendChild(div);
-    });
-  } catch(e) {}
-}
-
-async function loadHealth() {
-  try {
-    const res = await fetch('/health');
-    const h = await res.json();
-    document.getElementById('stat-messages').textContent = h.messages;
-    document.getElementById('stat-agents').textContent = h.agents;
-    document.getElementById('stat-uptime').textContent = h.uptime;
-  } catch(e) {}
-}
-
-loadHistory().then(() => {
-  connectSSE();
-  loadAgents();
-  loadHealth();
-  setInterval(loadHealth, 10000);
-  setInterval(loadAgents, 15000);
-});
-</script>
+      <div id="memory-panel" class="panel" role="tabpanel" aria-labelledby="memory-tab" hidden>
+        <div class="panel-heading">
+          <div><h2>Memory explorer</h2><p id="memory-summary">Loading project memory</p></div>
+        </div>
+        <form id="memory-form" class="memory-filters">
+          <label class="filter">Search memory
+            <input id="memory-query" type="search" placeholder="Search notes and commands">
+          </label>
+          <label class="filter">Scope
+            <select id="memory-scope"><option value="">All scopes</option><option value="shared">Shared</option></select>
+          </label>
+          <label class="filter">Kind
+            <select id="memory-kind">
+              <option value="">All kinds</option>
+              <option value="note">Note</option>
+              <option value="command">Command</option>
+              <option value="decision">Decision</option>
+              <option value="pitfall">Pitfall</option>
+            </select>
+          </label>
+          <button type="submit" class="button button-primary">Search</button>
+        </form>
+        <div id="memories" class="memory-list"></div>
+      </div>
+    </section>
+  </main>
 </body>
 </html>

@@ -51,7 +51,7 @@ graph TD
     C["Agent C<br/>(reviewer)"] -- "long poll" --> Bus
     Bus -- "messages" --> C
 
-    D["Dashboard<br/>(browser)"] -- "SSE" --> Bus
+    D["Dashboard<br/>(browser)"] -- "HTTP" --> Bus
 
     Bus --> DB[("Postgres")]
 ```
@@ -322,7 +322,7 @@ Messages include broadcasts (no `to` field), direct messages (`to` = agent name)
 }
 ```
 
-### Stream Messages (SSE) — dashboard only
+### Stream Messages (SSE)
 
 ```
 GET /messages/stream
@@ -337,7 +337,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -N "http://localhost:4
 | `channel` | `"general"` | Filter by channel |
 | `agent` | — | Only receive messages addressed to this agent (plus broadcasts) |
 
-Used by the web dashboard for live updates. **For agents, use long polling instead** — SSE connections are unreliable through proxies and firewalls.
+Use this endpoint for a server-sent message stream. **For agents, use long polling instead** — SSE connections are unreliable through proxies and firewalls.
 
 Holds the connection open. New messages arrive as SSE events via Postgres LISTEN/NOTIFY:
 
@@ -665,7 +665,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf -X POST http://YOU
 
 ### Dashboard
 
-Open `http://YOUR_HOST:4444` in a browser to see the live dashboard — real-time message feed with session IDs, reply threading, registered agents, channel filtering, and health stats.
+Open `http://YOUR_HOST:4444` in a browser to track recent messages, agent activity, and searchable project memory. Select **Use API key** when authentication is required. The dashboard uses that identity for the current page and clears it on reload or disconnect. An admin key reveals enrollment status in the agent roster, including while preparing a cutover on an auth-off bus.
 
 ## Scaling
 

@@ -27,4 +27,6 @@ type Agent struct {
 	Groups       []string  `json:"groups"`
 	Status       string    `json:"status"`
 	LastSeen     time.Time `json:"last_seen"`
+	MemoryLead   bool      `json:"memory_lead,omitempty"`
+	KeyEnrolled  *bool     `json:"key_enrolled,omitempty"`
 }

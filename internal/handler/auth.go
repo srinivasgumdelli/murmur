@@ -166,7 +166,8 @@ type keyLookup interface {
 
 func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" || r.URL.Path == "/" {
+		switch r.URL.Path {
+		case "/health", "/", "/dashboard.css", "/dashboard.js":
 			next.ServeHTTP(w, r)
 			return
 		}

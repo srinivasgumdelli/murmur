@@ -133,10 +133,14 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
+	direction := "ASC"
+	if r.URL.Query().Get("order") == "desc" {
+		direction = "DESC"
+	}
 	rows, err := pool.Query(r.Context(),
 		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
 		 FROM messages WHERE id > $1 AND `+messageVisibility+`
-		 AND ($3 = '' OR channel = $3) ORDER BY id ASC LIMIT $4`,
+		 AND ($3 = '' OR channel = $3) ORDER BY id `+direction+` LIMIT $4`,
 		after, AgentFromContext(r.Context()), channel, limit,
 	)
 	if err != nil {

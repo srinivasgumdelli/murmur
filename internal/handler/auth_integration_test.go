@@ -117,6 +117,32 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, "/keys", enrolledKey, `{"agent":"someone-else","enroll":true}`, http.StatusUnauthorized)
 	request(required, "/agents/enrolled-first/heartbeat", enrolledKey, "", http.StatusOK)
 
+	request(off, "/agents", admin, `{"name":"legacy-roster","role":"worker"}`, http.StatusCreated)
+	for _, tc := range []struct {
+		key        string
+		showStatus bool
+	}{
+		{admin, true},
+		{enrolledKey, false},
+	} {
+		roster := do(required, http.MethodGet, "/agents", tc.key, "", http.StatusOK)
+		var agents []model.Agent
+		if err := json.Unmarshal(roster.Body.Bytes(), &agents); err != nil || len(agents) < 2 {
+			t.Fatalf("roster: %s (%v)", roster.Body, err)
+		}
+		for _, agent := range agents {
+			if !tc.showStatus {
+				if agent.KeyEnrolled != nil {
+					t.Fatal("enrollment information exposed to an ordinary agent")
+				}
+				continue
+			}
+			if agent.KeyEnrolled == nil || *agent.KeyEnrolled != (agent.Name == "enrolled-first") {
+				t.Fatalf("wrong enrollment label for %s", agent.Name)
+			}
+		}
+	}
+
 	agentKey := issueKey(required, "registers-first")
 	request(required, "/agents", agentKey, `{"name":"registers-first","role":"worker"}`, http.StatusCreated)
 	senderKey := issueKey(mux, "sends-first")
@@ -282,6 +308,13 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	if received.ID != broadcastID || received.Status != "sent" {
 		t.Fatalf("sender stream should skip the direct message and leave its broadcast sent: %+v", received)
 	}
+	newest := do(required, http.MethodGet, "/messages?channel=&order=desc&limit=2", admin, "", http.StatusOK)
+	var latest listMessagesResponse
+	if err := json.Unmarshal(newest.Body.Bytes(), &latest); err != nil || len(latest.Messages) != 2 ||
+		latest.Messages[0].ID != broadcastID || latest.Messages[1].ID != privateID {
+		t.Fatalf("dashboard recent messages: %s (%v)", newest.Body, err)
+	}
+
 	for _, id := range []int{privateID, broadcastID} {
 		record := do(required, http.MethodGet, fmt.Sprintf("/messages/%d", id), admin, "", http.StatusOK)
 		var unchanged model.Message
