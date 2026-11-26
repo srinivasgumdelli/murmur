@@ -2,6 +2,26 @@
 
 Murmur and Postgres run in Docker Compose. Each agent runs its client and the Murmur launcher in its own container. A trusted enrollment container obtains a key for one agent and saves it in that agent’s private volume. The regular agent mounts the volume read-only and gets its MCP configuration when the launcher starts the client.
 
+## Install on a new machine
+
+On macOS or Linux, start Docker with Compose v2 before running the installer. Use [Docker Desktop](https://docs.docker.com/desktop/) or [Docker Engine](https://docs.docker.com/engine/install/).
+
+```bash
+curl -qfsSL --proto '=https' --proto-redir '=https' \
+  https://raw.githubusercontent.com/srinivasgumdelli/murmur/main/scripts/install.sh -o murmur-install.sh &&
+bash murmur-install.sh
+```
+
+The installer downloads the source into `${XDG_DATA_HOME:-$HOME/.local/share}/murmur/source`, generates an administrator key, and starts the Compose services with required authentication and memory. It prints the dashboard URL. The mode-0600 `install-state` file next to the source contains the Compose project name on the first line and the administrator key on the second line. Rerunning the installer from the same install directory reuses that project, key, and Postgres volumes. Set `MURMUR_INSTALL_DIR` to choose another location, `COMPOSE_PROJECT_NAME` to choose a different project, or `MURMUR_HOST_PORT` to publish on another port. `MURMUR_REF` selects the source revision when the installer downloads a new checkout. The installer refuses to take over an existing project. For those deployments, use the steps below.
+
+If you already have a Claude Code or Codex container image, you can enroll its agent during installation.
+
+```bash
+MURMUR_AGENT=reviewer MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest bash murmur-install.sh
+```
+
+To launch an enrolled agent, run the installed `scripts/docker-setup.sh` by absolute path from the intended workspace. Set `COMPOSE_PROJECT_NAME` to the project printed by the installer. The launcher configures memory MCP when the client starts.
+
 ## Use the setup script
 
 Run the script from this checkout with Docker Compose v2 and curl available. Load a persistent `MURMUR_ADMIN_KEY` from your secret store and export it in the operator shell. For a new bus, choose `MURMUR_AUTH=required` to enable memory at startup. For an existing bus, use its current auth mode and the same `COMPOSE_PROJECT_NAME` to retain its Postgres volume. Use the cutover steps below before moving existing keyless agents to required auth. The script uses the same project name as Docker Compose. If you previously started the bus from a different checkout directory without an explicit project name, set `COMPOSE_PROJECT_NAME` to the original name. Set `MURMUR_HOST_PORT` if the default host port, 4444, is already in use.
