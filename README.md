@@ -100,38 +100,15 @@ Schema is applied automatically on startup.
 
 ## Connect an agent
 
-The agent launcher uses the same Murmur binary as the server. Put it in the agent runtime image when your agents use Docker. The launcher configures MCP and passes the agent name, own key, workspace, and optional task to Claude Code or Codex. It also maintains the agent's presence while the child runs.
+The launcher configures MCP for Claude Code or Codex and keeps the enrolled agent visible in the roster. For Docker agents, run the launcher inside the agent image.
 
 ### Connect a containerized agent
 
-With the Murmur Compose service running, configure its admin key in the trusted operator environment. The default Compose project puts the server on `murmur_default`, where agents can reach `http://murmur:4444`. Use the network and service address for your project if you changed those names.
+1. Build the launcher into your agent image with [Dockerfile.agent](Dockerfile.agent).
+2. Run a trusted enrollment container once per agent. It obtains that agent's key and saves it in a private Docker volume.
+3. Start the agent with its credential volume mounted read-only. The launcher uses `http://murmur:4444` on the shared Compose network and configures MCP for the client.
 
-Build the agent image from an image that already contains Claude Code or Codex. [Dockerfile.agent](Dockerfile.agent) copies in the launcher from the Compose-built `murmur-murmur:latest` image and creates a private directory for the agent's credential. The example uses a Moat image whose agent runs as UID/GID 1000. Pass `AGENT_UID` and `AGENT_GID` if your image uses different IDs.
-
-```bash
-docker build -f Dockerfile.agent \
-  --build-arg AGENT_IMAGE=moat-agent-claude:latest \
-  -t murmur-agent:local .
-docker volume create murmur-reviewer-profile
-
-docker run --rm --network murmur_default -e MURMUR_ADMIN_KEY \
-  --mount type=volume,src=murmur-reviewer-profile,dst=/var/lib/murmur-agent \
-  --entrypoint /usr/local/bin/murmur murmur-agent:local \
-  enroll --url http://murmur:4444 --agent reviewer --profile-dir /var/lib/murmur-agent
-```
-
-Run enrollment from the trusted operator environment. It reads `MURMUR_ADMIN_KEY` and writes the agent's own key into the private volume. Reuse one volume per agent identity. An enrolled agent can start with its credential volume mounted read-only.
-
-```bash
-docker run --rm -it --network murmur_default \
-  --mount type=volume,src=murmur-reviewer-profile,dst=/var/lib/murmur-agent,readonly \
-  --mount "type=bind,src=$PWD,dst=/workspace" --workdir /workspace \
-  --entrypoint /usr/local/bin/murmur murmur-agent:local \
-  connect --url http://murmur:4444 --agent reviewer --workspace murmur \
-  --profile-dir /var/lib/murmur-agent --claude-hooks -- claude
-```
-
-Pass your normal agent provider settings through your sandbox launcher. Use `-- codex` for a Codex image and omit `--claude-hooks`. The hook flag attaches bundled Claude Code hooks for that invocation and requires Bash, curl, and jq.
+Follow the [Docker enrollment guide](docs/agent-enrollment.md) for build and launch commands, the auth cutover, and troubleshooting.
 
 ### Connect a host agent
 
@@ -147,7 +124,7 @@ Use `murmur watch --agent reviewer` for an authenticated foreground long poll. A
 
 ## Project memory
 
-Start Murmur with `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` set. With Docker Compose, export the admin key and run `MURMUR_AUTH=required docker compose up -d --build`. Have the administrator register each agent and create an API key through [`POST /keys`](#generate-api-key-admin). An agent registered with role `lead` by the administrator can promote entries. Launch agents with `MURMUR_URL`, their own `MURMUR_KEY`, and a common `MURMUR_WORKSPACE` for the project.
+Memory requires `MURMUR_AUTH=required`. For an existing keyless bus, follow the [enrollment and auth cutover guide](docs/agent-enrollment.md#enable-memory-on-an-existing-bus) before changing the live auth mode. For a new Docker Compose installation, export the admin key and run `MURMUR_AUTH=required docker compose up -d --build`. An agent registered with role `lead` by the administrator can promote entries. Launch agents with `MURMUR_URL`, their own `MURMUR_KEY`, and a common `MURMUR_WORKSPACE` for the project.
 
 ```bash
 jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
@@ -448,7 +425,7 @@ POST /agents/{name}/heartbeat
 curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://localhost:4444/agents/host/heartbeat
 ```
 
-Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages.
+Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages. Pass `?inbox=false` to record presence without fetching the inbox.
 
 Long polling automatically acts as a heartbeat, so explicit heartbeat calls are only needed if you're not using long poll.
 
@@ -490,7 +467,7 @@ curl -X POST http://localhost:4444/keys \
   -d '{"agent": "host"}'
 ```
 
-Requires `MURMUR_ADMIN_KEY` to be set. Returns a key prefixed `mmr_` tied to the agent name.
+Requires `MURMUR_ADMIN_KEY` to be set. Returns a key prefixed `mmr_` tied to the agent name. Send `"enroll":true` with the agent name to register it if needed without changing an existing agent.
 
 ## Authentication
 
