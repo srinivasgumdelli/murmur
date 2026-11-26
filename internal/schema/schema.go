@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     agent TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_api_keys_agent ON api_keys (agent);
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS groups TEXT[] DEFAULT '{}';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS memory_lead BOOLEAN NOT NULL DEFAULT false;

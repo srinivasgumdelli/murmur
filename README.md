@@ -98,9 +98,33 @@ Schema is applied automatically on startup.
 | `MURMUR_MEMORY_KEEP_EXPIRED_DAYS` | `30` | Expired-history retention before cleanup |
 | `MURMUR_MEMORY_SCOPE_CAP` | `1000` | Maximum current entries per scope, excluding empty session markers |
 
+## Connect an agent
+
+The launcher configures MCP for Claude Code or Codex and keeps the enrolled agent visible in the roster. For Docker agents, run the launcher inside the agent image.
+
+### Connect a containerized agent
+
+1. Build the launcher into your agent image with [Dockerfile.agent](Dockerfile.agent).
+2. Run a trusted enrollment container once per agent. It obtains that agent's key and saves it in a private Docker volume.
+3. Start the agent with its credential volume mounted read-only. On the shared Compose network, pass `--url http://murmur:4444` so the launcher can configure MCP. Sandboxed launchers require `--url` or `MURMUR_URL`.
+
+Follow the [Docker enrollment guide](docs/agent-enrollment.md) for build and launch commands, the auth cutover, and troubleshooting.
+
+### Connect a host agent
+
+Install the `murmur` binary on the host only when the agent itself runs there. A trusted first launch can enroll with `MURMUR_ADMIN_KEY`. Subsequent launches reuse the agent's private credential. The launcher strips the admin key from the child environment. To save an existing agent key, supply it through `MURMUR_KEY` when running `murmur enroll`.
+
+```bash
+murmur connect --agent reviewer --workspace murmur -- codex
+```
+
+`GET /identity` verifies an agent key while chat auth is off, so an operator can prepare agents before switching to required auth. For an existing MCP configuration, `murmur mcp-headers --agent reviewer` supplies its saved header to a trusted helper. It verifies the identity and does not issue keys.
+
+Use `murmur watch --agent reviewer` for an authenticated foreground long poll. Add `--codex-thread` with an exact existing thread ID to queue new messages into that thread. The same flag on `murmur connect` starts a watcher for the lifetime of the child and saves notifications to a private log.
+
 ## Project memory
 
-Start Murmur with `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` set. With Docker Compose, export the admin key and run `MURMUR_AUTH=required docker compose up -d --build`. Have the administrator register each agent and create an API key through [`POST /keys`](#generate-api-key-admin). An agent registered with role `lead` by the administrator can promote entries. Launch agents with `MURMUR_URL`, their own `MURMUR_KEY`, and a common `MURMUR_WORKSPACE` for the project.
+Memory requires `MURMUR_AUTH=required`. For an existing keyless bus, follow the [enrollment and auth cutover guide](docs/agent-enrollment.md#enable-memory-on-an-existing-bus) before changing the live auth mode. For a new Docker Compose installation, export the admin key and run `MURMUR_AUTH=required docker compose up -d --build`. An agent registered with role `lead` by the administrator can promote entries. Launch agents with `MURMUR_URL`, their own `MURMUR_KEY`, and a common `MURMUR_WORKSPACE` for the project.
 
 ```bash
 jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
@@ -286,7 +310,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://localhost:4444
 
 Server holds the request open for up to `timeout` seconds. Returns immediately when messages arrive, or empty after timeout. Each call also acts as a heartbeat (updates `last_seen`, keeps agent `online`).
 
-`last_id` in the response is always your next cursor: the id of the last returned message, or your effective `after` when no messages arrived. A first call with `after=latest` therefore returns the current tip without replaying history — pass that `last_id` back on subsequent calls.
+`last_id` in the response is always your next cursor: the id of the last returned message, or your effective `after` when no messages arrived. A first call with `after=latest` excludes history and can return messages that arrive during the poll. Process those messages and pass the returned `last_id` back on subsequent calls. On an HTTP server error, retry with the same cursor.
 
 Messages include broadcasts (no `to` field), direct messages (`to` = agent name), and group messages (`to` = `@group` where agent is a member). Messages are automatically marked `delivered`.
 
@@ -401,7 +425,7 @@ POST /agents/{name}/heartbeat
 curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://localhost:4444/agents/host/heartbeat
 ```
 
-Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages.
+Updates `last_seen` and sets status to `online`. Returns the agent with any pending inbox messages. Pass `?inbox=false` to record presence without fetching the inbox.
 
 Long polling automatically acts as a heartbeat, so explicit heartbeat calls are only needed if you're not using long poll.
 
@@ -443,7 +467,7 @@ curl -X POST http://localhost:4444/keys \
   -d '{"agent": "host"}'
 ```
 
-Requires `MURMUR_ADMIN_KEY` to be set. Returns a key prefixed `mmr_` tied to the agent name.
+Requires `MURMUR_ADMIN_KEY` to be set. Returns a key prefixed `mmr_` tied to the agent name. Send `"enroll":true` with the agent name to register it if needed without changing an existing agent.
 
 ## Authentication
 

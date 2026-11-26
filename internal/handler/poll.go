@@ -62,7 +62,12 @@ func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 		}
 
 		// Check for existing messages first
-		msgs, lastID := fetchPollMessages(r.Context(), pool, agent, after)
+		msgs, lastID, err := fetchPollMessages(r.Context(), pool, agent, after)
+		if err != nil {
+			log.Printf("poll messages: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		if len(msgs) > 0 {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(pollResponse{Messages: msgs, LastID: lastID})
@@ -80,7 +85,12 @@ func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 			`UPDATE agents SET status = 'online', last_seen = now() WHERE name = $1`, agent)
 
 		// Check again after wakeup
-		msgs, lastID = fetchPollMessages(r.Context(), pool, agent, after)
+		msgs, lastID, err = fetchPollMessages(r.Context(), pool, agent, after)
+		if err != nil {
+			log.Printf("poll messages: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
 		if msgs == nil {
 			msgs = []model.Message{}
 		}
@@ -101,7 +111,7 @@ func parseAfter(v string) (after int, tail bool, err error) {
 	return after, false, err
 }
 
-func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([]model.Message, int) {
+func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([]model.Message, int, error) {
 	rows, err := pool.Query(ctx,
 		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
 		 FROM messages
@@ -124,8 +134,7 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 		after, agent,
 	)
 	if err != nil {
-		log.Printf("poll query: %v", err)
-		return nil, 0
+		return nil, after, err
 	}
 	defer rows.Close()
 
@@ -135,8 +144,7 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 	for rows.Next() {
 		var m model.Message
 		if err := rows.Scan(&m.ID, &m.Sender, &m.SessionID, &m.Channel, &m.To, &m.ReplyTo, &m.Message, &m.Metadata, &m.Status, &m.CreatedAt); err != nil {
-			log.Printf("poll scan: %v", err)
-			continue
+			return nil, after, err
 		}
 		if m.Status == "sent" && (m.Sender != agent || (m.To != nil && *m.To == agent)) {
 			ids = append(ids, m.ID)
@@ -146,10 +154,14 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 		lastID = m.ID
 	}
 
+	if err := rows.Err(); err != nil {
+		return nil, after, err
+	}
+
 	if len(ids) > 0 {
 		_, _ = pool.Exec(ctx,
 			`UPDATE messages SET status = 'delivered' WHERE id = ANY($1::int[]) AND status = 'sent'`, ids)
 	}
 
-	return msgs, lastID
+	return msgs, lastID, nil
 }

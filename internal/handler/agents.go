@@ -210,8 +210,10 @@ func heartbeat(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name 
 		return
 	}
 
-	inbox := fetchInbox(r.Context(), pool, name)
-
+	out := heartbeatResponse{Agent: a}
+	if r.URL.Query().Get("inbox") != "false" {
+		out.Inbox = fetchInbox(r.Context(), pool, name)
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(heartbeatResponse{Agent: a, Inbox: inbox})
+	_ = json.NewEncoder(w).Encode(out)
 }

@@ -16,24 +16,16 @@ Murmur delivers agent messages with history. Its memory API stores searchable no
 
 ## Architecture
 
-```
-┌──────────────┐         ┌──────────────┐         ┌──────────────┐
-│   Agent A     │──HTTP──▶│              │◀──HTTP──│   Agent B     │
-│  (host/SSH)   │◀──SSE───│ Murmur  │───SSE──▶│  (sandbox)    │
-└──────────────┘         │    :4444     │         └──────────────┘
-                          │              │
-┌──────────────┐         │              │         ┌──────────────┐
-│   Agent C     │──HTTP──▶│              │◀──HTTP──│   Agent D     │
-│  (reviewer)   │◀──SSE───│              │───SSE──▶│  (tester)     │
-└──────────────┘         └──────┬───────┘         └──────────────┘
-                                │
-                          ┌─────▼─────┐
-                          │ Postgres  │
-                          │  (own DB) │
-                          └───────────┘
+```mermaid
+flowchart LR
+    E[Trusted enrollment container] -->|Admin enrollment| M[Murmur server]
+    E -->|Save agent credential| V[Private agent volume]
+    V -->|Read-only mount| A[Agent container]
+    A -->|MCP memory and HTTP messages| M
+    M --> P[(Postgres)]
 ```
 
-The Docker deployment includes a dedicated Postgres instance. Messages, agents, and API keys use Postgres. Memory uses that database by default and can use a local SQLite file. The memory service owns permissions, limits, and events across the HTTP and MCP transports. Claude Code hooks use the HTTP API for session context and command capture.
+Messages, agents, and API keys use the dedicated Compose Postgres instance. Memory uses that database by default and can use a local SQLite file. The same binary runs as the server and as the launcher in agent images. The memory service applies the same permissions, limits, and events across HTTP and MCP. Claude Code hooks use the HTTP API for session context and command capture.
 
 ## Endpoints
 
@@ -135,6 +127,16 @@ List registered agents.
   {"name": "sandbox", "session_id": "b2c3d4e5-...", "role": "code-writer", "description": "Working on frontend rebuild", "capabilities": ["code", "git-push"], "groups": ["sandbox"], "status": "online", "last_seen": "2026-05-08T10:29:00Z"}
 ]
 ```
+
+### Agent enrollment and identity
+
+| Endpoint | Behavior |
+| --- | --- |
+| `POST /keys` | Requires the admin key. Returns a new agent key once and stores its hash. Send `{"agent":"reviewer","enroll":true}` to create the agent if needed and issue its key in one transaction. Enrollment preserves existing agent metadata. |
+| `GET /identity` | Requires a valid Murmur key in every auth mode. Returns the verified agent identity and whether the key has admin or lead access, plus the configured chat auth mode in `chat_auth`. |
+| `POST /agents/{name}/heartbeat?inbox=false` | Records launcher presence and returns the agent without fetching or changing the delivery status of pending messages. |
+
+For Docker, the enrollment container writes the agent credential into a volume dedicated to that identity. The regular agent mounts it read-only. The launcher selects the profile by bus URL and agent name, verifies the credential, and supplies it to the MCP client and optional hooks or watcher. Read the [Docker enrollment guide](docs/agent-enrollment.md) for commands.
 
 ### `GET /health`
 
@@ -253,7 +255,7 @@ MURMUR_MEMORY_SCOPE_CAP=1000      # Current entries per scope
 
 ## Docker Compose
 
-The [Compose configuration](docker-compose.yml) starts Murmur and Postgres, keeps Postgres data in `murmur-data`, and mounts `murmur-memory-data` at the container's writable home directory. Set `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` to enable memory. Set `MURMUR_MEMORY_STORE=sqlite` to use the mounted volume for memory. Override `MURMUR_MEMORY_DB` to select a different file inside the container.
+The [Compose configuration](docker-compose.yml) starts Murmur and Postgres, keeps Postgres data in `murmur-data`, and mounts `murmur-memory-data` at the container's writable home directory. Set `MURMUR_AUTH=required` to enable memory and `MURMUR_ADMIN_KEY` to administer enrollment and promotion. The [agent Dockerfile](Dockerfile.agent) adds the launcher to your runtime image. Its credential volumes are separate from the server volumes. Set `MURMUR_MEMORY_STORE=sqlite` to use the mounted volume for memory. Override `MURMUR_MEMORY_DB` to select a different file inside the container.
 
 ## Dockerfile
 
@@ -264,7 +266,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/murmur .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/murmur ./cmd/murmur
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /bin/murmur /murmur
@@ -311,7 +313,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -X POST http://YOUR_HO
 
 ### MCP server
 
-Clients can connect to `/mcp` for memory tools. Message clients use the existing HTTP endpoints.
+The launcher configures a Streamable HTTP connection to `/mcp` with the agent key. Chat, presence, and the watcher use the existing HTTP endpoints. Agents and watchers share the enrolled identity.
 
 ## Message Conventions
 
@@ -388,7 +390,7 @@ Murmur fills this gap.
 
 ### How agents connect for messaging
 
-Each Claude Code session has the Bash tool. Agents use `curl` to talk to the bus. Add the following to each session's CLAUDE.md or agent prompt.
+Use the [Docker enrollment guide](docs/agent-enrollment.md) to enroll and launch a containerized agent. The following HTTP examples show how clients can send and read messages directly.
 
 ### For host session (CLAUDE.local.md)
 
@@ -498,10 +500,10 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -sf "http://YOUR_HOST:
 |-------|----------|----------------|
 | Host Claude Code | Local machine | `http://YOUR_HOST:4444` (SSH tunnel or LAN) |
 | Sandbox (moat) | Docker container | `http://HOST_IP:4444` (outbound HTTP) |
-| Same Docker network | Docker network | `http://localhost:4444` or `http://murmur:4444` |
+| Same Docker network | Docker network | `http://murmur:4444` |
 | Future agents | Any machine with HTTP | `http://YOUR_HOST:4444` (LAN) or via tunnel |
 
-The bus only needs to be reachable via HTTP. No special protocols, no MCP, no WebSocket. Plain HTTP + SSE.
+Use the Compose service address for container-to-container HTTP and MCP. On the Docker host, the published port is available at `http://localhost:4444`. A Docker Desktop connection through `host.docker.internal` can be forwarded to a loopback listener, where MCP checks the Host header.
 
 ## Build
 

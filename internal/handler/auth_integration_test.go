@@ -61,6 +61,7 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	const admin = "integration-admin"
 	mux := http.NewServeMux()
 	mux.Handle("/keys", Keys(pool, admin))
+	mux.HandleFunc("GET /identity", Identity("off"))
 	mux.Handle("/agents", Agents(pool))
 	mux.Handle("/agents/", Agents(pool))
 	mux.Handle("/messages", Messages(pool))
@@ -97,6 +98,25 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		return out.Key
 	}
 
+	enroll := func(name string) string {
+		t.Helper()
+		rec := request(off, "/keys", admin, fmt.Sprintf(`{"agent":%q,"enroll":true}`, name), http.StatusCreated)
+		var credential createKeyResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &credential); err != nil || credential.Key == "" {
+			t.Fatalf("invalid enrollment response: %v", err)
+		}
+		return credential.Key
+	}
+	enrolledKey := enroll("enrolled-first")
+	var identity model.Identity
+	rec := do(off, http.MethodGet, "/identity", enrolledKey, "", http.StatusOK)
+	if err := json.Unmarshal(rec.Body.Bytes(), &identity); err != nil || identity.Agent != "enrolled-first" || identity.Admin || identity.ChatAuth != "off" {
+		t.Fatalf("auth-off identity response: %s (%v)", rec.Body, err)
+	}
+	do(off, http.MethodGet, "/identity", "", "", http.StatusUnauthorized)
+	request(required, "/keys", enrolledKey, `{"agent":"someone-else","enroll":true}`, http.StatusUnauthorized)
+	request(required, "/agents/enrolled-first/heartbeat", enrolledKey, "", http.StatusOK)
+
 	agentKey := issueKey(required, "registers-first")
 	request(required, "/agents", agentKey, `{"name":"registers-first","role":"worker"}`, http.StatusCreated)
 	senderKey := issueKey(mux, "sends-first")
@@ -104,6 +124,11 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, "/keys", senderKey, `{"agent":"sends-first"}`, http.StatusUnauthorized)
 
 	grant := request(required, "/agents", admin, `{"name":"registers-first","role":"lead","groups":["trusted"],"description":"admin assigned","capabilities":["review"]}`, http.StatusCreated)
+	leadKey := enroll("registers-first")
+	leadIdentity := do(off, http.MethodGet, "/identity", leadKey, "", http.StatusOK)
+	if err := json.Unmarshal(leadIdentity.Body.Bytes(), &identity); err != nil || !identity.Lead || identity.Agent != "registers-first" {
+		t.Fatalf("enrollment altered the lead grant: %s (%v)", leadIdentity.Body, err)
+	}
 	rejoin := request(required, "/agents", agentKey, `{"name":"registers-first","role":"lead","groups":["other"],"description":"changed","capabilities":["deploy"]}`, http.StatusCreated)
 	var original, current model.Agent
 	if err := json.Unmarshal(grant.Body.Bytes(), &original); err != nil {
@@ -165,6 +190,11 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, direct+"/ack", outsiderKey, `{"agent":"others"}`, http.StatusNotFound)
 	request(required, direct+"/ack", senderKey, `{"agent":"sends-first"}`, http.StatusNotFound)
 
+	presence := request(required, "/agents/registers-first/heartbeat?inbox=false", freshKey, "", http.StatusOK)
+	var heartbeat heartbeatResponse
+	if err := json.Unmarshal(presence.Body.Bytes(), &heartbeat); err != nil || heartbeat.Inbox != nil || heartbeat.Name != "registers-first" {
+		t.Fatalf("presence heartbeat must omit the inbox: %s (%v)", presence.Body, err)
+	}
 	senderPollPath := fmt.Sprintf("/messages/poll?agent=sends-first&after=%d", directID-1)
 	for _, tc := range []struct {
 		mode    string

@@ -1,0 +1,86 @@
+# Docker agent enrollment
+
+Murmur and Postgres run in Docker Compose. Each agent runs its client and the Murmur launcher in its own container. A trusted enrollment container obtains a key for one agent and saves it in that agent’s private volume. The regular agent mounts the volume read-only and gets its MCP configuration when the launcher starts the client.
+
+## Prepare the server
+
+Use the same Compose project and Postgres volume when upgrading an existing bus. Load a persistent `MURMUR_ADMIN_KEY` into the operator shell from your secret store. Compose passes it to the Murmur server. Preserve the server’s current `MURMUR_AUTH` setting for this step.
+
+From the checkout containing the launcher, start a new installation with `docker compose up -d --build`. For an existing installation with Postgres already running, use this command to replace the application service.
+
+```bash
+docker compose up -d --no-deps --build murmur
+```
+
+The default project is `murmur`, the network is `murmur_default`, and the agent URL on that network is `http://murmur:4444`. Use your existing project name with `docker compose -p` if you customized it. Pass the same `--url` or `MURMUR_URL` for enrollment and launch. Containers require an explicit address, and the saved credential is selected by URL and agent name.
+
+## Build the agent image
+
+The [agent Dockerfile](../Dockerfile.agent) takes an image that already contains Claude Code or Codex. It adds the Murmur binary and a private credential directory owned by the agent’s container user. The defaults of UID and GID 1000 match the Moat image in this example. Use `AGENT_UID` and `AGENT_GID` for a different owner. Set `MURMUR_IMAGE` if your Compose build uses a different server image tag.
+
+```bash
+docker build -f Dockerfile.agent \
+  --build-arg AGENT_IMAGE=moat-agent-claude:latest \
+  -t murmur-agent:local .
+```
+
+## Enroll once and launch
+
+Use one credential volume per agent. The enrollment container needs the admin key and write access to that volume.
+
+```bash
+docker volume create murmur-reviewer-profile
+docker run --rm --network murmur_default -e MURMUR_ADMIN_KEY \
+  --mount type=volume,src=murmur-reviewer-profile,dst=/var/lib/murmur-agent \
+  --entrypoint /usr/local/bin/murmur murmur-agent:local \
+  enroll --url http://murmur:4444 --agent reviewer --profile-dir /var/lib/murmur-agent
+```
+
+Enrollment reuses a valid saved key on repeat runs. A newly enrolled name begins as an offline coding agent. Existing agents retain their role, groups, and session. The launcher verifies that the server recognizes the credential for the requested name.
+
+Launch the regular agent with a read-only credential mount. Use the repository you want the agent to work on as the workspace bind mount, and supply the usual provider settings through your sandbox launcher.
+
+```bash
+docker run --rm -it --network murmur_default \
+  --mount type=volume,src=murmur-reviewer-profile,dst=/var/lib/murmur-agent,readonly \
+  --mount "type=bind,src=$PWD,dst=/workspace" --workdir /workspace \
+  --entrypoint /usr/local/bin/murmur murmur-agent:local \
+  connect --url http://murmur:4444 --agent reviewer --workspace murmur \
+  --profile-dir /var/lib/murmur-agent --claude-hooks -- claude
+```
+
+The normal container receives only the agent credential from its volume. The launcher wires that credential into MCP and sets `MURMUR_AGENT`, `MURMUR_URL`, `MURMUR_WORKSPACE`, and the optional `MURMUR_TASK`. It maintains presence without fetching the inbox. For a Codex image, use `-- codex` and omit `--claude-hooks`. The Claude hook flag requires Bash, curl, and jq.
+
+For a standalone watcher, run `murmur watch` inside the same agent container with the same URL, agent name, and profile directory. Use `--codex-thread` only when you know the exact existing thread that should receive messages. The profile can stay mounted read-only.
+
+## Enable memory on an existing bus
+
+1. Enroll active agents while keeping the current chat auth mode. `GET /identity` verifies the key even when chat auth is off.
+2. Start the agents and their watchers with the enrolled identity. Confirm they can poll and that heartbeats appear under the expected agent names. The operator dashboard shows key enrollment when signed in with the admin key.
+3. When active clients are ready, use the following command to recreate the Murmur service with required authentication.
+
+   ```bash
+   MURMUR_AUTH=required docker compose up -d --no-deps murmur
+   ```
+
+   Keep the admin key available to Compose. Murmur applies the memory schema on startup. The existing Postgres volume retains chat history and agent identities. Keep `MURMUR_AUTH=required` in your deployment configuration for subsequent recreations.
+4. Check that `/health` shows `"memory":"ok"`. Confirm the agent connects to Murmur in its MCP client and can call `memory_search`.
+
+## Diagnose connection problems
+
+| Symptom | What to check |
+| --- | --- |
+| `POST /keys` returns 404 | The server must run the launcher-compatible build with `MURMUR_ADMIN_KEY` configured. |
+| Enrollment returns 401 | The enrollment container and server must have the same admin key. |
+| The launcher reports a missing credential | Check that the volume, profile directory, agent name, and bus URL match the enrollment command. |
+| The launcher rejects the credential directory | Use the same UID/GID for both containers. The credential directory is private and its key file is mode 0600. |
+| Docker Desktop returns MCP 403 through `host.docker.internal` | Use the Compose network and `http://murmur:4444`. Forwarding through a host loopback socket can trigger the MCP server’s Host check. |
+| `/mcp` or `/memories` returns 503 while the bus is healthy | Switch to `MURMUR_AUTH=required` after the active agents have credentials. |
+
+## Credential lifecycle
+
+To save an existing agent key, supply it in `MURMUR_KEY` when you run `murmur enroll`. The launcher verifies the key before replacing the profile. On Windows hosts, Murmur encrypts saved keys for the account that runs enrollment, so use the same account to launch the agent.
+
+A profile is a reusable secret. Keep its volume restricted to that agent, and let it survive normal container replacement. Removing a local profile removes the client’s copy. The server still recognizes an issued key until it is removed on the server. Deleting an agent through the current admin API removes the agent record and all of its keys.
+
+For the underlying endpoints and permissions, see the [design](../DESIGN.md#agent-enrollment-and-identity).
