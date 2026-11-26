@@ -66,8 +66,14 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	}
 
 	var a model.Agent
-	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
+	// Hold the per-name lock that private claims take, so a claim for a
+	// case variant cannot commit alongside this registration.
+	err := pgx.BeginFunc(r.Context(), pool, func(tx pgx.Tx) error {
+		if err := lockAgentName(r.Context(), tx, req.Name); err != nil {
+			return err
+		}
+		return tx.QueryRow(r.Context(),
+			`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
 		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
 		 ON CONFLICT (name) DO UPDATE SET
 		 session_id = CASE WHEN $6 OR NOT agents.memory_lead THEN gen_random_uuid()::text ELSE agents.session_id END,
@@ -81,8 +87,9 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		 WHERE ($6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2))
 		   AND NOT ($6 AND $2 = 'lead' AND agents.self_enrolled AND NOT $8)
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
-	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+			req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
+		).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	})
 	if errors.Is(err, pgx.ErrNoRows) && actor.admin && req.Role == "lead" {
 		// The lead guard is the only way an admin upsert matches no row.
 		http.Error(w, "agent "+req.Name+" claimed its name through private enrollment; check who holds its key, then send confirm_self_enrolled:true to make it a lead, or reclaim it with POST /keys", http.StatusConflict)

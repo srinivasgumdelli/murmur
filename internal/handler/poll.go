@@ -84,6 +84,12 @@ func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 		_, _ = pool.Exec(r.Context(),
 			`UPDATE agents SET status = 'online', last_seen = now() WHERE name = $1`, agent)
 
+		// The key may have been revoked while this request waited.
+		if !keyStillValid(r.Context(), pool, principalFromContext(r.Context())) {
+			http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+			return
+		}
+
 		// Check again after wakeup
 		msgs, lastID, err = fetchPollMessages(r.Context(), pool, agent, after)
 		if err != nil {

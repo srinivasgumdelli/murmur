@@ -44,7 +44,7 @@ func (n *Notifier) subscribeMemory(scopes []string) (*memorySubscription, func()
 	}
 }
 
-func MemoryStream(n *Notifier, authMode string, messages http.HandlerFunc) http.HandlerFunc {
+func MemoryStream(n *Notifier, authMode string, pool keyLookup, messages http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("types") != "memory" {
 			messages(w, r)
@@ -77,12 +77,18 @@ func MemoryStream(n *Notifier, authMode string, messages http.HandlerFunc) http.
 			case <-r.Context().Done():
 				return
 			case event := <-sub.events:
+				if !keyStillValid(r.Context(), pool, p) {
+					return
+				}
 				data, _ := json.Marshal(event)
 				if _, err := fmt.Fprintf(w, "event: memory\ndata: %s\n\n", data); err != nil {
 					return
 				}
 				flusher.Flush()
 			case <-heartbeat.C:
+				if !keyStillValid(r.Context(), pool, p) {
+					return
+				}
 				if _, err := fmt.Fprint(w, "event: heartbeat\ndata: {}\n\n"); err != nil {
 					return
 				}

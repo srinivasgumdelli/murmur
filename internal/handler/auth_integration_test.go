@@ -192,6 +192,10 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		// Admin key issuance and lead promotion never silently adopt a claim.
 		const squatter = "squatter-key"
 		claim("contested", squatter, http.StatusOK)
+		squatterPrincipal := principal{agent: "contested", keyHash: hashKey(squatter)}
+		if !keyStillValid(ctx, pool, squatterPrincipal) {
+			t.Fatal("fresh claim key reported invalid")
+		}
 		request(required, "/keys", admin, `{"agent":"contested","enroll":true}`, http.StatusConflict)
 		request(required, "/keys", admin, `{"agent":"contested"}`, http.StatusConflict)
 		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusConflict)
@@ -205,6 +209,10 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 			t.Fatalf("reclaim response: %s (%v)", reclaimed.Body, err)
 		}
 		do(required, http.MethodGet, "/identity", squatter, "", http.StatusUnauthorized)
+		// Open streams recheck the key, so the claimant's stream ends too.
+		if keyStillValid(ctx, pool, squatterPrincipal) {
+			t.Fatal("reclaimed key still valid for open streams")
+		}
 		var role string
 		if err := pool.QueryRow(ctx, `SELECT role FROM agents WHERE name = 'contested'`).Scan(&role); err != nil || role != "coding-agent" {
 			t.Fatalf("reclaim kept the claimant's role %q (%v)", role, err)

@@ -131,23 +131,31 @@ func run() error {
 				closeStore()
 			}()
 		}
-		authors, err := store.Authors(ctx)
-		if err == nil {
-			err = schema.ReserveAgentNames(ctx, pool, authors)
+		// Author reservation only matters while names can be self-claimed.
+		// Enabling enrollment later reruns it at that startup.
+		if privateEnroll {
+			authors, err := store.Authors(ctx)
+			if err == nil {
+				err = schema.ReserveAgentNames(ctx, pool, authors)
+			}
+			if err != nil {
+				log.Printf("private enrollment disabled: preserve memory authors: %v", err)
+				privateEnroll = false
+			}
 		}
-		if err != nil {
-			log.Printf("private enrollment disabled: preserve memory authors: %v", err)
-			privateEnroll = false
+		var reserveAuthor func(context.Context, string) error
+		if privateEnroll {
+			reserveAuthor = func(ctx context.Context, author string) error {
+				return schema.ReserveAgentNames(ctx, pool, []string{author})
+			}
 		}
 
 		memoryService = memory.NewService(store, memory.Config{
-			AuthMode: authMode,
-			TTLDays:  ttlDays,
-			ScopeCap: scopeCap,
-			Publish:  notifier.PublishMemory,
-			ReserveAuthor: func(ctx context.Context, author string) error {
-				return schema.ReserveAgentNames(ctx, pool, []string{author})
-			},
+			AuthMode:      authMode,
+			TTLDays:       ttlDays,
+			ScopeCap:      scopeCap,
+			Publish:       notifier.PublishMemory,
+			ReserveAuthor: reserveAuthor,
 		})
 		memoryCheck = memoryService.Health
 		reapMemory = func(ctx context.Context) error {
@@ -175,7 +183,7 @@ func run() error {
 
 	startTime := time.Now()
 	mux := http.NewServeMux()
-	mux.HandleFunc("/messages/stream", handler.MemoryStream(notifier, authMode, handler.Stream(pool)))
+	mux.HandleFunc("/messages/stream", handler.MemoryStream(notifier, authMode, pool, handler.Stream(pool)))
 	mux.HandleFunc("/messages/poll", handler.Poll(pool, notifier))
 	mux.HandleFunc("/messages/", handler.Messages(pool))
 	mux.HandleFunc("/messages", handler.Messages(pool))

@@ -135,7 +135,7 @@ func TestMemoryRoutesRequireRequiredMode(t *testing.T) {
 
 func TestMemoryStreamFiltersScopes(t *testing.T) {
 	n := NewNotifier()
-	handler := MemoryStream(n, "required", nil)
+	handler := MemoryStream(n, "required", nil, nil)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		handler(w, r.WithContext(context.WithValue(r.Context(), principalKey{}, principal{agent: "tester"})))
 	}))

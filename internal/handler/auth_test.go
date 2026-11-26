@@ -17,11 +17,11 @@ func TestAuthIdentity(t *testing.T) {
 		status          int
 		lookupErr       error
 	}{
-		{"agent", "required", "valid", principal{agent: "alice", lead: true}, 204, nil},
+		{"agent", "required", "valid", principal{agent: "alice", lead: true, keyHash: hashKey("valid")}, 204, nil},
 		{"admin", "required", "admin-key", principal{admin: true}, 204, nil},
 		{"required invalid", "required", "bogus", principal{}, 401, nil},
 		{"optional invalid", "optional", "bogus", principal{}, 204, nil},
-		{"before registration", "required", "preregistered", principal{agent: "alice"}, 204, nil},
+		{"before registration", "required", "preregistered", principal{agent: "alice", keyHash: hashKey("preregistered")}, 204, nil},
 		{"required lookup failure", "required", "valid", principal{}, 500, errors.New("database unavailable")},
 		{"optional lookup failure", "optional", "valid", principal{}, 500, errors.New("database unavailable")},
 		{"off", "off", "valid", principal{}, 204, nil},

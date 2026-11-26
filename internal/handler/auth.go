@@ -153,6 +153,23 @@ type principal struct {
 	agent string
 	admin bool
 	lead  bool
+	// keyHash identifies the agent key for long-lived requests, which
+	// recheck it so a revoked key (reclaim or delete) loses access.
+	keyHash string
+}
+
+// keyStillValid reports whether the request's agent key still exists.
+// Admin and unauthenticated principals carry no key hash and always pass.
+func keyStillValid(ctx context.Context, pool keyLookup, p principal) bool {
+	if p.keyHash == "" || pool == nil {
+		return true
+	}
+	var valid bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM api_keys WHERE key_hash = $1)`, p.keyHash).Scan(&valid); err != nil {
+		log.Printf("auth: recheck key: %v", err)
+		return false
+	}
+	return valid
 }
 
 type principalKey struct{}
@@ -227,7 +244,9 @@ func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.
 			).Scan(&p.agent, &p.lead)
 			if errors.Is(err, pgx.ErrNoRows) {
 				p = principal{}
-			} else if err != nil {
+			} else if err == nil {
+				p.keyHash = hashKey(key)
+			} else {
 				log.Printf("auth: look up key: %v", err)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return

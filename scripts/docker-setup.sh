@@ -198,8 +198,9 @@ fi
 
 docker volume inspect "$profile_volume" >/dev/null 2>&1 ||
     fail "No credential volume for $agent in project $project. Run enroll first."
-# A volume left by an interrupted enrollment has no key yet; the launcher
-# then reports "no saved credential", and rerunning enroll resumes the claim.
+# A volume left by an interrupted enrollment holds no key yet, only the
+# pending claim. connect mounts it read-only and fails; run enroll AGENT
+# again to resume the same claim.
 exec "${run[@]}" \
     --mount "type=volume,src=$profile_volume,dst=$profile_dir,readonly" \
     --mount "type=volume,src=$state_volume,dst=$state_dir" \

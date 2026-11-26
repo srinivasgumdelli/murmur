@@ -44,6 +44,7 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		viewer := AgentFromContext(r.Context())
+		caller := principalFromContext(r.Context())
 		deliveryAgent := viewer
 		if deliveryAgent == "" {
 			deliveryAgent = agent
@@ -93,6 +94,9 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case <-heartbeat.C:
+				if !keyStillValid(r.Context(), pool, caller) {
+					return
+				}
 				_, _ = fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
 				flusher.Flush()
 			case result := <-notifCh:
@@ -132,6 +136,11 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 					}
 				}
 
+				// A reclaim or delete revokes the key; stop before marking
+				// anything delivered to its former holder.
+				if !keyStillValid(r.Context(), pool, caller) {
+					return
+				}
 				var msg model.Message
 				err = pool.QueryRow(r.Context(),
 					`UPDATE messages SET status = CASE
