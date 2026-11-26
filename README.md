@@ -100,18 +100,50 @@ Schema is applied automatically on startup.
 
 ## Connect an agent
 
-Build or install the `murmur` binary on the machine that launches agents. Configure the server's admin key once. Keep that key in the trusted launch environment. On the first launch, the wrapper enrolls the chosen agent and saves its own credential in a mode-0600 file under your user configuration directory. Later launches reuse it without the admin key.
+The agent launcher uses the same Murmur binary as the server. Put it in the agent runtime image when your agents use Docker. The launcher configures MCP and passes the agent name, own key, workspace, and optional task to Claude Code or Codex. It also maintains the agent's presence while the child runs.
+
+### Connect a containerized agent
+
+With the Murmur Compose service running, configure its admin key in the trusted operator environment. The default Compose project puts the server on `murmur_default`, where agents can reach `http://murmur:4444`. Use the network and service address for your project if you changed those names.
+
+Build the agent image from an image that already contains Claude Code or Codex. [Dockerfile.agent](Dockerfile.agent) copies in the launcher from the Compose-built `murmur-murmur:latest` image and creates a private directory for the agent's credential. The example uses a Moat image whose agent runs as UID/GID 1000. Pass `AGENT_UID` and `AGENT_GID` if your image uses different IDs.
+
+```bash
+docker build -f Dockerfile.agent \
+  --build-arg AGENT_IMAGE=moat-agent-claude:latest \
+  -t murmur-agent:local .
+docker volume create murmur-reviewer-profile
+
+docker run --rm --network murmur_default -e MURMUR_ADMIN_KEY \
+  --mount type=volume,src=murmur-reviewer-profile,dst=/var/lib/murmur-agent \
+  --entrypoint /usr/local/bin/murmur murmur-agent:local \
+  enroll --url http://murmur:4444 --agent reviewer --profile-dir /var/lib/murmur-agent
+```
+
+Run enrollment from the trusted operator environment. It reads `MURMUR_ADMIN_KEY` and writes the agent's own key into the private volume. Reuse one volume per agent identity. An enrolled agent can start with its credential volume mounted read-only.
+
+```bash
+docker run --rm -it --network murmur_default \
+  --mount type=volume,src=murmur-reviewer-profile,dst=/var/lib/murmur-agent,readonly \
+  --mount "type=bind,src=$PWD,dst=/workspace" --workdir /workspace \
+  --entrypoint /usr/local/bin/murmur murmur-agent:local \
+  connect --url http://murmur:4444 --agent reviewer --workspace murmur \
+  --profile-dir /var/lib/murmur-agent --claude-hooks -- claude
+```
+
+Pass your normal agent provider settings through your sandbox launcher. Use `-- codex` for a Codex image and omit `--claude-hooks`. The hook flag attaches bundled Claude Code hooks for that invocation and requires Bash, curl, and jq.
+
+### Connect a host agent
+
+Install the `murmur` binary on the host only when the agent itself runs there. A trusted first launch can enroll with `MURMUR_ADMIN_KEY`. Subsequent launches reuse the agent's private credential. The launcher strips the admin key from the child environment.
 
 ```bash
 murmur connect --agent reviewer --workspace murmur -- codex
-murmur connect --agent builder --workspace murmur --claude-hooks -- claude
 ```
 
-The wrapper adds the authenticated HTTP MCP configuration for both clients. It passes the agent's name, key, workspace, and optional task to the child environment and strips the admin key. It also maintains the agent's presence while the child runs. Use `--url` to select a bus and `--task` to include task memory. `--claude-hooks` attaches the bundled memory hooks for that invocation and requires Bash, curl, and jq.
+`GET /identity` verifies an agent key while chat auth is off, so an operator can prepare agents before switching to required auth. For an existing MCP configuration, `murmur mcp-headers --agent reviewer` supplies its saved header to a trusted helper. It verifies the identity and does not issue keys.
 
-Use `murmur enroll --agent reviewer` to stage an identity before starting the agent. `GET /identity` verifies an agent key even while chat auth is off. For an existing client profile, `murmur mcp-headers --agent reviewer` supplies a saved header to a trusted MCP header helper. The helper verifies the agent identity and never issues an enrollment.
-
-Use `murmur watch --agent reviewer` for an authenticated foreground long poll. Add `--codex-thread` with an exact existing thread ID to queue new messages into that thread. The same flag on `murmur connect` starts the watcher for the lifetime of the child and saves notifications to a private log. Use the same agent name throughout.
+Use `murmur watch --agent reviewer` for an authenticated foreground long poll. Add `--codex-thread` with an exact existing thread ID to queue new messages into that thread. The same flag on `murmur connect` starts a watcher for the lifetime of the child and saves notifications to a private log.
 
 ## Project memory
 
