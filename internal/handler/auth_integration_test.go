@@ -129,14 +129,19 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		claim("reserved-legacy-key", "another-key", http.StatusConflict)
 		request(required, "/agents", admin, `{"name":"unkeyed-agent","role":"worker"}`, http.StatusCreated)
 		claim("unkeyed-agent", "another-key", http.StatusConflict)
-		if _, err := pool.Exec(ctx, `INSERT INTO messages (sender, "to", message) VALUES ('system', 'prior-private-recipient', 'history')`); err != nil {
+		// A message to an unclaimed name must not block its first enrollment.
+		if _, err := pool.Exec(ctx, `INSERT INTO messages (sender, "to", message) VALUES ('host-sender', 'future-recipient', 'start reviewing')`); err != nil {
 			t.Fatal(err)
 		}
-		claim("prior-private-recipient", "another-key", http.StatusConflict)
+		claim("future-recipient", "future-recipient-key", http.StatusOK)
+		claim("host-sender", "another-key", http.StatusConflict)
 		// Simulate an older database containing history from before the trigger.
 		if _, err := pool.Exec(ctx, `
 			ALTER TABLE messages DISABLE TRIGGER message_inserted;
-			INSERT INTO messages (sender, "to", message) VALUES ('former-sender','former-recipient','history');
+			INSERT INTO messages (sender, "to", message) VALUES
+				('former-sender', 'former-recipient', 'history'),
+				('system', NULL, 'former-joined joined — worked on docs'),
+				('system', NULL, 'former-left left');
 			DELETE FROM murmur_schema_migrations WHERE name = 'reserve-message-identities'
 		`); err != nil {
 			t.Fatal(err)
@@ -144,12 +149,17 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		if err := schema.Apply(ctx, pool); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE sender = 'former-sender' OR "to" = 'prior-private-recipient'`); err != nil {
+		if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE sender IN ('former-sender', 'system')`); err != nil {
 			t.Fatal(err)
 		}
 		claim("former-sender", "another-key", http.StatusConflict)
-		claim("former-recipient", "another-key", http.StatusConflict)
-		claim("prior-private-recipient", "another-key", http.StatusConflict)
+		claim("former-joined", "another-key", http.StatusConflict)
+		claim("former-left", "another-key", http.StatusConflict)
+		claim("former-recipient", "former-recipient-key", http.StatusOK)
+		// Keep the roster checks below limited to their own agents.
+		do(required, http.MethodDelete, "/agents/future-recipient", admin, "", http.StatusOK)
+		do(required, http.MethodDelete, "/agents/former-recipient", admin, "", http.StatusOK)
+		claim("former-recipient", "former-recipient-key", http.StatusConflict)
 		if err := schema.ReserveAgentNames(ctx, pool, []string{"former-memory-author"}); err != nil {
 			t.Fatal(err)
 		}

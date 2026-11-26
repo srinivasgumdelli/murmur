@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -281,5 +282,45 @@ func TestPrivateEnrollmentRetriesSameClaim(t *testing.T) {
 	saved, err := loadCredential(t.Context(), c, o, true)
 	if err != nil || saved != first || attempts.Load() != 2 {
 		t.Fatalf("expected reuse of the saved profile, attempts %d: %v", attempts.Load(), err)
+	}
+}
+
+func TestDiscoverPrivateEnrollmentUsesBusHostAndDegradedHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		want       string
+	}{
+		{"degraded memory still advertises", `{"status":"degraded","private_enrollment":true,"private_enrollment_port":4555}`, http.StatusServiceUnavailable, "4555"},
+		{"older server without port", `{"status":"ok","private_enrollment":true}`, http.StatusOK, "4445"},
+		{"listener not serving", `{"status":"ok"}`, http.StatusOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/health" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			c, err := newClient(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := discoverPrivateEnrollment(context.Background(), c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ""
+			if tc.want != "" {
+				want = "http://127.0.0.1:" + tc.want
+			}
+			if got != want {
+				t.Fatalf("discoverPrivateEnrollment = %q, want %q", got, want)
+			}
+		})
 	}
 }

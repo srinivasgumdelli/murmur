@@ -29,6 +29,9 @@ type Config struct {
 	ScopeCap int
 	Now      func() time.Time
 	Publish  func(Event)
+	// ReserveAuthor records an author name before its first entry is stored,
+	// so purging the entry later cannot free the name for self-enrollment.
+	ReserveAuthor func(context.Context, string) error
 }
 
 type Service struct {
@@ -168,6 +171,11 @@ func (s *Service) PutWithResult(ctx context.Context, actor Actor, req PutRequest
 		Scope: req.Scope, Key: req.Key, Kind: req.Kind, Body: req.Body, Tags: req.Tags,
 		Author: actor.Name(), SessionID: req.SessionID, Provenance: Reported, Source: req.Source,
 		CreatedAt: now, ExpiresAt: &expiresAt,
+	}
+	if s.cfg.ReserveAuthor != nil {
+		if err := s.cfg.ReserveAuthor(ctx, m.Author); err != nil {
+			return Memory{}, false, err
+		}
 	}
 	stored, created, err := s.store.Put(ctx, m, s.cfg.ScopeCap, actor)
 	if err == nil && created {

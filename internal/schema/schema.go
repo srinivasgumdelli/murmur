@@ -47,10 +47,11 @@ CREATE TABLE IF NOT EXISTS reserved_agent_names (name TEXT PRIMARY KEY);
 CREATE OR REPLACE FUNCTION notify_new_message()
 RETURNS TRIGGER AS $$
 BEGIN
+    -- Reserve senders only. Recipients may be names nobody has claimed yet,
+    -- and reserving them would let any message block a future enrollment.
     INSERT INTO reserved_agent_names (name)
-    SELECT name FROM (VALUES (NEW.sender), (NEW."to")) AS names(name)
-    WHERE name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$'
-    ORDER BY name
+    SELECT NEW.sender
+    WHERE NEW.sender ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$'
     ON CONFLICT DO NOTHING;
     PERFORM pg_notify('new_message', json_build_object(
         'id', NEW.id,
@@ -96,9 +97,7 @@ BEGIN
         SELECT identity.name FROM (
             SELECT sender AS name FROM messages
             UNION
-            SELECT "to" FROM messages
-            UNION
-            SELECT substring(message FROM '^([a-zA-Z0-9][a-zA-Z0-9._-]{0,127}) left$') FROM messages WHERE sender = 'system'
+            SELECT substring(message FROM '^([a-zA-Z0-9][a-zA-Z0-9._-]{0,127}) (?:left$|joined\M)') FROM messages WHERE sender = 'system'
         ) identity
         WHERE identity.name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$'
         ON CONFLICT DO NOTHING;

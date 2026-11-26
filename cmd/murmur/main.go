@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -144,6 +145,9 @@ func run() error {
 			TTLDays:  ttlDays,
 			ScopeCap: scopeCap,
 			Publish:  notifier.PublishMemory,
+			ReserveAuthor: func(ctx context.Context, author string) error {
+				return schema.ReserveAgentNames(ctx, pool, []string{author})
+			},
 		})
 		memoryCheck = memoryService.Health
 		reapMemory = func(ctx context.Context) error {
@@ -153,9 +157,15 @@ func run() error {
 
 	var enrollmentListener net.Listener
 	if privateEnroll {
-		enrollmentListener, err = net.Listen("tcp", getenv("MURMUR_DOCKER_ENROLL_ADDR", ":4445"))
+		enrollmentListener, err = listenPrivateEnrollment(getenv("MURMUR_DOCKER_ENROLL_ADDR", "127.0.0.1:4445"))
 		if err != nil {
 			log.Printf("private enrollment disabled: %v", err)
+		}
+	}
+	var enrollmentPort atomic.Int64
+	if enrollmentListener != nil {
+		if tcp, ok := enrollmentListener.Addr().(*net.TCPAddr); ok {
+			enrollmentPort.Store(int64(tcp.Port))
 		}
 	}
 
@@ -169,7 +179,7 @@ func run() error {
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
 	mux.HandleFunc("GET /identity", handler.Identity(authMode))
-	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck, enrollmentListener != nil))
+	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck, func() int { return int(enrollmentPort.Load()) }))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
 	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))
 	mux.HandleFunc("/", ui.Handler())
@@ -189,8 +199,10 @@ func run() error {
 		}
 		defer privateServer.Close()
 		go func() {
-			if err := privateServer.Serve(enrollmentListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Printf("private enrollment listener: %v", err)
+			err := privateServer.Serve(enrollmentListener)
+			enrollmentPort.Store(0)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("private enrollment listener stopped: %v", err)
 			}
 		}()
 		log.Printf("private enrollment ready on %s", enrollmentListener.Addr())
@@ -199,4 +211,17 @@ func run() error {
 	handler.StartReaper(ctx, pool, messageTTL, reapMemory)
 	log.Printf("murmur ready on :%s", port)
 	return http.ListenAndServe(":"+port, srv)
+}
+
+// listenPrivateEnrollment refuses wildcard addresses. The enrollment endpoint
+// is unauthenticated, so it must bind to loopback or a named private network.
+func listenPrivateEnrollment(addr string) (net.Listener, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q binds every interface; use 127.0.0.1:4445 or the Compose service name", addr)
+	}
+	return net.Listen("tcp", addr)
 }

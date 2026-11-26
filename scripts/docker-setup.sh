@@ -43,6 +43,7 @@ settings=$("${compose[@]}" config | awk '
 read -r project self_enroll <<< "$settings"
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
 case $self_enroll in
+    "") self_enroll=auto ;; # the server treats an unset value as auto too
     0|1|auto) ;;
     *) fail "Invalid MURMUR_DOCKER_SELF_ENROLL value '$self_enroll'. Use 0, 1, or auto." ;;
 esac
@@ -61,7 +62,9 @@ private_enrollment_available() {
     local capability='"private_enrollment"[[:space:]]*:[[:space:]]*true[[:space:]]*[,}]'
     [[ $self_enroll != 0 ]] || return 1
     port=$(published_port 2>/dev/null) || return 1
-    health=$(curl -qfsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null) || return 1
+    # No -f: /health returns 503 when memory is degraded, and enrollment
+    # does not depend on memory.
+    health=$(curl -qsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null) || return 1
     [[ $health =~ $capability ]]
 }
 
@@ -106,9 +109,7 @@ build_agent_image() {
 enroll_agent() {
     local enrollment=( "${run[@]}" )
     local credential=(enroll --url "$bus_url" --agent "$agent" --profile-dir "$profile_dir")
-    if [[ $1 == private ]]; then
-        credential+=(--enrollment-url http://murmur:4445)
-    else
+    if [[ $1 != private ]]; then
         [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export MURMUR_ADMIN_KEY to enroll an agent."
         export MURMUR_ADMIN_KEY
         enrollment+=(-e MURMUR_ADMIN_KEY)

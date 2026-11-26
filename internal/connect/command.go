@@ -117,8 +117,7 @@ func Run(ctx context.Context, args []string) error {
 		return errors.New("Murmur helper refused to provide a credential for a different MCP endpoint")
 	}
 	canEnroll := command == "connect" || command == "enroll"
-	o.discoverEnrollment = canEnroll && os.Getenv("MURMUR_DOCKER_SELF_ENROLL") != "0" &&
-		c.base == "http://murmur:4444" && inContainer()
+	o.discoverEnrollment = canEnroll && os.Getenv("MURMUR_DOCKER_SELF_ENROLL") != "0" && inContainer()
 	var key string
 	if command == "enroll" && os.Getenv("MURMUR_KEY") != "" {
 		err = importCredential(ctx, c, o, os.Getenv("MURMUR_KEY"))

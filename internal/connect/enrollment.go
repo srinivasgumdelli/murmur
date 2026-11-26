@@ -5,13 +5,58 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
+
+// discoverPrivateEnrollment asks the bus whether its private enrollment
+// listener is serving and returns its URL on the bus host. A degraded memory
+// store makes /health return 503, which does not affect enrollment, so the
+// body is read for either status.
+func discoverPrivateEnrollment(ctx context.Context, c *client) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/health", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		return "", &statusError{path: req.URL.Path, code: resp.StatusCode}
+	}
+	var health struct {
+		PrivateEnrollment bool `json:"private_enrollment"`
+		Port              int  `json:"private_enrollment_port"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&health); err != nil {
+		return "", err
+	}
+	if !health.PrivateEnrollment {
+		return "", nil
+	}
+	port := health.Port
+	if port == 0 {
+		port = 4445 // servers that predate the advertised port
+	}
+	if port < 1 || port > 65535 {
+		return "", errors.New("bus advertised an invalid private enrollment port")
+	}
+	bus, err := url.Parse(c.base)
+	if err != nil {
+		return "", err
+	}
+	return "http://" + net.JoinHostPort(bus.Hostname(), strconv.Itoa(port)), nil
+}
 
 func enrollOnDocker(ctx context.Context, bus *client, o options, path string) (string, error) {
 	enrollment, err := newClient(o.enrollmentURL)

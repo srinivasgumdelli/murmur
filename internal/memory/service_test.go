@@ -240,3 +240,33 @@ func TestServiceSearchResolvesCurrentAuthor(t *testing.T) {
 		t.Errorf("over-limit error = %v, want invalid", err)
 	}
 }
+
+func TestServiceReservesAuthorBeforeStoring(t *testing.T) {
+	var reserved []string
+	stored := false
+	store := fakeStore{put: func(m Memory, _ int, _ Actor) (Memory, bool, error) {
+		if len(reserved) != 1 || reserved[0] != "worker" {
+			t.Fatalf("stored before reserving author: %v", reserved)
+		}
+		stored = true
+		return m, true, nil
+	}}
+	service := NewService(store, Config{AuthMode: "required", ReserveAuthor: func(_ context.Context, name string) error {
+		reserved = append(reserved, name)
+		return nil
+	}})
+	if _, err := service.Put(t.Context(), Actor{Agent: "worker"}, PutRequest{Scope: "workspace:api", Kind: KindNone}); err != nil {
+		t.Fatal(err)
+	}
+	if !stored {
+		t.Fatal("memory not stored")
+	}
+
+	failing := NewService(fakeStore{put: func(Memory, int, Actor) (Memory, bool, error) {
+		t.Fatal("stored after reservation failed")
+		return Memory{}, false, nil
+	}}, Config{AuthMode: "required", ReserveAuthor: func(context.Context, string) error { return errors.New("db down") }})
+	if _, err := failing.Put(t.Context(), Actor{Agent: "worker"}, PutRequest{Scope: "workspace:api", Kind: KindNone}); err == nil {
+		t.Fatal("put succeeded although author reservation failed")
+	}
+}
