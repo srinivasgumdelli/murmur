@@ -2,10 +2,12 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/model"
 )
@@ -49,6 +51,10 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "name and role are required", http.StatusBadRequest)
 		return
 	}
+	if !checkAgent(w, r, req.Name) {
+		return
+	}
+	actor := principalFromContext(r.Context())
 	if req.Capabilities == nil {
 		req.Capabilities = []string{}
 	}
@@ -58,12 +64,24 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen)
-		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now())
-		 ON CONFLICT (name) DO UPDATE SET session_id = gen_random_uuid()::text, role = $2, description = $3, capabilities = $4, groups = $5, status = 'online', last_seen = now()
+		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
+		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
+		 ON CONFLICT (name) DO UPDATE SET
+		 session_id = CASE WHEN $6 OR NOT agents.memory_lead THEN gen_random_uuid()::text ELSE agents.session_id END,
+		 role = $2,
+		 memory_lead = CASE WHEN $6 THEN $2 = 'lead' ELSE agents.memory_lead END,
+		 description = CASE WHEN $6 OR NOT agents.memory_lead THEN $3 ELSE agents.description END,
+		 capabilities = CASE WHEN $6 OR NOT agents.memory_lead THEN $4 ELSE agents.capabilities END,
+		 groups = CASE WHEN $6 OR NOT agents.memory_lead THEN $5 ELSE agents.groups END,
+		 status = 'online', last_seen = now()
+		 WHERE $6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2)
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Description, req.Capabilities, req.Groups,
+		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "forbidden: a memory lead can rejoin with its own key and assigned role, or be registered by an admin", http.StatusForbidden)
+		return
+	}
 	if err != nil {
 		log.Printf("upsert agent: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -112,6 +130,9 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name string) {
+	if !checkAgent(w, r, name) {
+		return
+	}
 	tx, err := pool.Begin(r.Context())
 	if err != nil {
 		log.Printf("begin tx: %v", err)
@@ -119,6 +140,24 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	// Lock the row before reading the grant or deleting keys. A concurrent
+	// role change and deletion must agree which one happened first.
+	var lead bool
+	err = tx.QueryRow(r.Context(), `SELECT memory_lead FROM agents WHERE name = $1 FOR UPDATE`, name).Scan(&lead)
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "agent not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("look up agent %s for deletion: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if lead && !principalFromContext(r.Context()).admin {
+		http.Error(w, "forbidden: only an admin can delete a memory lead", http.StatusForbidden)
+		return
+	}
 
 	if _, err := tx.Exec(r.Context(), `DELETE FROM api_keys WHERE agent = $1`, name); err != nil {
 		log.Printf("delete api_keys for agent %s: %v", name, err)
@@ -133,7 +172,8 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		name,
 	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	if err != nil {
-		http.Error(w, "agent not found", http.StatusNotFound)
+		log.Printf("delete agent %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -155,6 +195,9 @@ type heartbeatResponse struct {
 }
 
 func heartbeat(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, name string) {
+	if !checkAgent(w, r, name) {
+		return
+	}
 	var a model.Agent
 	err := pool.QueryRow(r.Context(),
 		`UPDATE agents SET status = 'online', last_seen = now()

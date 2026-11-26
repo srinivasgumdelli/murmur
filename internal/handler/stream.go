@@ -1,13 +1,17 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/model"
 )
@@ -36,11 +40,14 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			channel = "general"
 		}
 		agent := r.URL.Query().Get("agent")
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		flusher.Flush()
+		if agent != "" && !checkAgent(w, r, agent) {
+			return
+		}
+		viewer := AgentFromContext(r.Context())
+		deliveryAgent := viewer
+		if deliveryAgent == "" {
+			deliveryAgent = agent
+		}
 
 		conn, err := pool.Acquire(r.Context())
 		if err != nil {
@@ -54,19 +61,32 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		flusher.Flush()
+
 		heartbeat := time.NewTicker(30 * time.Second)
 		defer heartbeat.Stop()
 
 		notifCh := make(chan streamNotifResult, 1)
+		listenCtx, cancel := context.WithCancel(r.Context())
+		var pending sync.WaitGroup
+		defer func() {
+			cancel()
+			pending.Wait()
+		}()
 		waitNext := func() {
-			n, err := conn.Conn().WaitForNotification(r.Context())
-			if err != nil {
-				notifCh <- streamNotifResult{"", err}
-				return
-			}
-			notifCh <- streamNotifResult{n.Payload, nil}
+			pending.Go(func() {
+				n, err := conn.Conn().WaitForNotification(listenCtx)
+				if err != nil {
+					notifCh <- streamNotifResult{"", err}
+					return
+				}
+				notifCh <- streamNotifResult{n.Payload, nil}
+			})
 		}
-		go waitNext()
+		waitNext()
 
 		for {
 			select {
@@ -87,15 +107,15 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 				var payload notifyPayload
 				if err := json.Unmarshal([]byte(result.payload), &payload); err != nil {
 					log.Printf("unmarshal notification: %v", err)
-					go waitNext()
+					waitNext()
 					continue
 				}
 
 				if channel != "" && payload.Channel != channel {
-					go waitNext()
+					waitNext()
 					continue
 				}
-				if agent != "" && payload.To != nil {
+				if viewer == "" && agent != "" && payload.To != nil {
 					if group, ok := strings.CutPrefix(*payload.To, "@"); ok {
 						var isMember bool
 						_ = pool.QueryRow(r.Context(),
@@ -103,32 +123,36 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 							agent, group,
 						).Scan(&isMember)
 						if !isMember {
-							go waitNext()
+							waitNext()
 							continue
 						}
 					} else if *payload.To != agent {
-						go waitNext()
+						waitNext()
 						continue
 					}
 				}
 
 				var msg model.Message
 				err = pool.QueryRow(r.Context(),
-					`UPDATE messages SET status = CASE WHEN status = 'sent' THEN 'delivered' ELSE status END
-					 WHERE id = $1
+					`UPDATE messages SET status = CASE
+					 WHEN status = 'sent' AND ($3 = '' OR sender <> $3 OR "to" = $3) THEN 'delivered'
+					 ELSE status END
+					 WHERE id = $1 AND `+messageVisibility+`
 					 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at`,
-					payload.ID,
+					payload.ID, viewer, deliveryAgent,
 				).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
 				if err != nil {
-					log.Printf("fetch message %d: %v", payload.ID, err)
-					go waitNext()
+					if !errors.Is(err, pgx.ErrNoRows) {
+						log.Printf("fetch message %d: %v", payload.ID, err)
+					}
+					waitNext()
 					continue
 				}
 
 				data, _ := json.Marshal(msg)
 				_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", data)
 				flusher.Flush()
-				go waitNext()
+				waitNext()
 			}
 		}
 	}

@@ -34,6 +34,10 @@ func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 			return
 		}
 
+		if !checkAgent(w, r, agent) {
+			return
+		}
+
 		after, tail, err := parseAfter(r.URL.Query().Get("after"))
 		if err != nil {
 			http.Error(w, "after must be a message id or 'latest'", http.StatusBadRequest)
@@ -104,8 +108,7 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 		 WHERE id > $1
 		 AND (
 		     sender = $2
-		     OR "to" = $2
-		     OR "to" IN (SELECT '@' || unnest(groups) FROM agents WHERE name = $2)
+		     OR `+messageRecipient+`
 		     OR ("to" IS NULL AND reply_to IS NULL)
 		     OR ("to" IS NULL AND reply_to IS NOT NULL AND EXISTS (
 		         SELECT 1 FROM messages AS parent
@@ -135,7 +138,7 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 			log.Printf("poll scan: %v", err)
 			continue
 		}
-		if m.Status == "sent" {
+		if m.Status == "sent" && (m.Sender != agent || (m.To != nil && *m.To == agent)) {
 			ids = append(ids, m.ID)
 			m.Status = "delivered"
 		}
@@ -145,7 +148,7 @@ func fetchPollMessages(ctx context.Context, pool DB, agent string, after int) ([
 
 	if len(ids) > 0 {
 		_, _ = pool.Exec(ctx,
-			`UPDATE messages SET status = 'delivered' WHERE id = ANY($1::int[])`, ids)
+			`UPDATE messages SET status = 'delivered' WHERE id = ANY($1::int[]) AND status = 'sent'`, ids)
 	}
 
 	return msgs, lastID

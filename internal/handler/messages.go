@@ -2,14 +2,24 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/srinivasgumdelli/murmur/internal/model"
 )
+
+// messageRecipient identifies a direct or group recipient in $2.
+const messageRecipient = `"to" = $2
+	OR "to" IN (SELECT '@' || unnest(groups) FROM agents WHERE name = $2)`
+
+// Logged-in agents see broadcasts and messages they sent or received. Empty
+// viewers are operators and unauthenticated chat requests.
+const messageVisibility = `($2 = '' OR sender = $2 OR "to" IS NULL OR ` + messageRecipient + `)`
 
 type postMessageRequest struct {
 	Sender    string          `json:"sender"`
@@ -67,6 +77,9 @@ func postMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sender and message are required", http.StatusBadRequest)
 		return
 	}
+	if !checkAgent(w, r, req.Sender) {
+		return
+	}
 	if req.Channel == "" {
 		req.Channel = "general"
 	}
@@ -120,19 +133,12 @@ func getMessages(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	var query string
-	var args []any
-	if channel == "" {
-		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
-		 FROM messages WHERE id > $1 ORDER BY id ASC LIMIT $2`
-		args = []any{after, limit}
-	} else {
-		query = `SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
-		 FROM messages WHERE channel = $1 AND id > $2 ORDER BY id ASC LIMIT $3`
-		args = []any{channel, after, limit}
-	}
-
-	rows, err := pool.Query(r.Context(), query, args...)
+	rows, err := pool.Query(r.Context(),
+		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
+		 FROM messages WHERE id > $1 AND `+messageVisibility+`
+		 AND ($3 = '' OR channel = $3) ORDER BY id ASC LIMIT $4`,
+		after, AgentFromContext(r.Context()), channel, limit,
+	)
 	if err != nil {
 		log.Printf("query messages: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -170,7 +176,7 @@ func getMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, idSt
 	var msg model.Message
 	err = pool.QueryRow(r.Context(),
 		`SELECT id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at
-		 FROM messages WHERE id = $1`, id,
+		 FROM messages WHERE id = $1 AND `+messageVisibility, id, AgentFromContext(r.Context()),
 	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
 	if err != nil {
 		http.Error(w, "message not found", http.StatusNotFound)
@@ -202,15 +208,24 @@ func ackMessage(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, idSt
 		return
 	}
 
+	if !checkAgent(w, r, req.Agent) {
+		return
+	}
+
 	var msg model.Message
 	err = pool.QueryRow(r.Context(),
 		`UPDATE messages SET status = 'acked'
-		 WHERE id = $1
+		 WHERE id = $1 AND ($2 = '' OR "to" IS NULL OR `+messageRecipient+`)
 		 RETURNING id, sender, session_id, channel, "to", reply_to, message, metadata, status, created_at`,
-		id,
+		id, AgentFromContext(r.Context()),
 	).Scan(&msg.ID, &msg.Sender, &msg.SessionID, &msg.Channel, &msg.To, &msg.ReplyTo, &msg.Message, &msg.Metadata, &msg.Status, &msg.CreatedAt)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "message not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		log.Printf("ack message: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
