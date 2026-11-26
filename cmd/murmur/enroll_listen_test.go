@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestListenPrivateEnrollmentRefusesWildcard(t *testing.T) {
-	for _, addr := range []string{":4445", "0.0.0.0:4445", "[::]:4445"} {
+	for _, addr := range []string{":0", "0.0.0.0:0", "[::]:0", "0:0", "0.0:0"} {
 		if l, err := listenPrivateEnrollment(addr); err == nil {
 			l.Close()
 			t.Fatalf("listenPrivateEnrollment(%q) succeeded, want refusal", addr)

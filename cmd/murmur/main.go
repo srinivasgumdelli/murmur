@@ -227,5 +227,15 @@ func listenPrivateEnrollment(addr string) (net.Listener, error) {
 	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
 		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q binds every interface; use the Compose service name, such as murmur:4445", addr)
 	}
-	return net.Listen("tcp", addr)
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	// Forms such as "0:4445" or a name resolving to 0.0.0.0 pass the parse
+	// check above but still bind every interface.
+	if tcp, ok := l.Addr().(*net.TCPAddr); !ok || tcp.IP.IsUnspecified() {
+		l.Close()
+		return nil, fmt.Errorf("MURMUR_DOCKER_ENROLL_ADDR %q binds every interface; use the Compose service name, such as murmur:4445", addr)
+	}
+	return l, nil
 }

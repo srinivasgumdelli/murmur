@@ -103,6 +103,11 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 
 func issueKey(ctx context.Context, pool *pgxpool.Pool, req createKeyRequest, keyHash string) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		// Wait for any in-flight private claim of this name to commit, so the
+		// self-enrolled check below sees it.
+		if err := lockAgentName(ctx, tx, req.Agent); err != nil {
+			return err
+		}
 		if req.Enroll {
 			// An enrolled identity keeps its existing role, groups and session.
 			if _, err := tx.Exec(ctx, `INSERT INTO agents (name, session_id, role, status)
@@ -125,7 +130,8 @@ func issueKey(ctx context.Context, pool *pgxpool.Pool, req createKeyRequest, key
 			if _, err := tx.Exec(ctx, `DELETE FROM api_keys WHERE agent = $1`, req.Agent); err != nil {
 				return err
 			}
-			if _, err := tx.Exec(ctx, `UPDATE agents SET self_enrolled = false WHERE name = $1`, req.Agent); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE agents SET self_enrolled = false, role = 'coding-agent', description = NULL,
+				capabilities = '{}', groups = '{}', memory_lead = false WHERE name = $1`, req.Agent); err != nil {
 				return err
 			}
 		}

@@ -171,8 +171,12 @@ if [[ $action == connect ]]; then
         args+=(--task "$MURMUR_TASK")
     fi
     args+=(-- "$@")
+    # An existing profile volume holds the saved credential, so skip
+    # enrollment and launch directly, as before private enrollment existed.
     enrollment_method=
-    if [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
+    if docker volume inspect "$profile_volume" >/dev/null 2>&1; then
+        :
+    elif [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
         enrollment_method="admin"
     elif private_enrollment_available; then
         enrollment_method="private"
@@ -194,6 +198,8 @@ fi
 
 docker volume inspect "$profile_volume" >/dev/null 2>&1 ||
     fail "No credential volume for $agent in project $project. Run enroll first."
+# A volume left by an interrupted enrollment has no key yet; the launcher
+# then reports "no saved credential", and rerunning enroll resumes the claim.
 exec "${run[@]}" \
     --mount "type=volume,src=$profile_volume,dst=$profile_dir,readonly" \
     --mount "type=volume,src=$state_volume,dst=$state_dir" \

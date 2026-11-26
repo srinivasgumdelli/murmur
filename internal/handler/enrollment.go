@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -20,36 +21,53 @@ import (
 
 var errEnrollmentConflict = errors.New("agent name or credential already reserved")
 
-// Private enrollment is unauthenticated, so bound how many claims one
-// listener accepts. Twenty per ten minutes covers launching a fleet.
+// Private enrollment is unauthenticated, so bound how many claims each
+// source address makes. Twenty per ten minutes covers launching a fleet.
 const (
 	enrollmentLimit  = 20
 	enrollmentWindow = 10 * time.Minute
 )
 
+// claimLimiter allows each source address a bounded number of claims per
+// window, so one container cannot exhaust enrollment for the others.
 type claimLimiter struct {
-	mu     sync.Mutex
-	recent []time.Time
-	limit  int
-	window time.Duration
-	now    func() time.Time
+	mu      sync.Mutex
+	sources map[string][]time.Time
+	limit   int
+	window  time.Duration
+	now     func() time.Time
 }
 
-func (l *claimLimiter) allow() bool {
+func (l *claimLimiter) allow(source string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.sources == nil {
+		l.sources = map[string][]time.Time{}
+	}
 	now := l.now()
-	kept := l.recent[:0]
-	for _, at := range l.recent {
-		if now.Sub(at) < l.window {
-			kept = append(kept, at)
+	recent := func(times []time.Time) []time.Time {
+		kept := times[:0]
+		for _, at := range times {
+			if now.Sub(at) < l.window {
+				kept = append(kept, at)
+			}
+		}
+		return kept
+	}
+	// Bound memory: drop sources with no recent claims once the map grows.
+	if len(l.sources) > 1024 {
+		for key, times := range l.sources {
+			if len(recent(times)) == 0 {
+				delete(l.sources, key)
+			}
 		}
 	}
-	l.recent = kept
-	if len(l.recent) >= l.limit {
+	times := recent(l.sources[source])
+	if len(times) >= l.limit {
+		l.sources[source] = times
 		return false
 	}
-	l.recent = append(l.recent, now)
+	l.sources[source] = append(times, now)
 	return true
 }
 
@@ -84,7 +102,11 @@ func privateEnrollment(pool *pgxpool.Pool, limiter *claimLimiter) http.Handler {
 			return
 		}
 
-		if !limiter.allow() {
+		source, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			source = r.RemoteAddr
+		}
+		if !limiter.allow(source) {
 			http.Error(w, "too many enrollment attempts; retry later or ask an administrator", http.StatusTooManyRequests)
 			return
 		}
@@ -105,8 +127,18 @@ func privateEnrollment(pool *pgxpool.Pool, limiter *claimLimiter) http.Handler {
 	return mux
 }
 
+// lockAgentName serializes claims and admin key issuance for one name,
+// ignoring letter case, until the transaction ends.
+func lockAgentName(ctx context.Context, tx pgx.Tx, agent string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('murmur-agent:' || lower($1)))`, agent)
+	return err
+}
+
 func claimAgent(ctx context.Context, pool *pgxpool.Pool, agent, keyHash string) error {
 	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := lockAgentName(ctx, tx, agent); err != nil {
+			return err
+		}
 		inserted, err := tx.Exec(ctx, `INSERT INTO agents (name, session_id, role, status, self_enrolled)
 			VALUES ($1, gen_random_uuid()::text, 'coding-agent', 'offline', true)
 			ON CONFLICT (name) DO NOTHING`, agent)

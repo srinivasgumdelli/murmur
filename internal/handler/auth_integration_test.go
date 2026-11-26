@@ -170,6 +170,25 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		claim("Private-Agent", "case-key", http.StatusConflict)
 		claim("FUTURE-RECIPIENT", "case-key", http.StatusConflict)
 
+		// Concurrent claims of case variants leave exactly one identity.
+		results := make(chan int, 2)
+		for _, name := range []string{"racer", "Racer"} {
+			go func(name string) {
+				req := httptest.NewRequest(http.MethodPost, "/enroll", strings.NewReader(pair(name, name+"-key"))).WithContext(ctx)
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				private.ServeHTTP(rec, req)
+				results <- rec.Code
+			}(name)
+		}
+		if codes := []int{<-results, <-results}; !slices.Contains(codes, http.StatusOK) || !slices.Contains(codes, http.StatusConflict) {
+			t.Fatalf("concurrent case-variant claims returned %v, want one 200 and one 409", codes)
+		}
+		for _, name := range []string{"racer", "Racer"} {
+			_, _ = pool.Exec(ctx, `DELETE FROM api_keys WHERE agent = $1`, name)
+			_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE name = $1`, name)
+		}
+
 		// Admin key issuance and lead promotion never silently adopt a claim.
 		const squatter = "squatter-key"
 		claim("contested", squatter, http.StatusOK)
@@ -186,6 +205,10 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 			t.Fatalf("reclaim response: %s (%v)", reclaimed.Body, err)
 		}
 		do(required, http.MethodGet, "/identity", squatter, "", http.StatusUnauthorized)
+		var role string
+		if err := pool.QueryRow(ctx, `SELECT role FROM agents WHERE name = 'contested'`).Scan(&role); err != nil || role != "coding-agent" {
+			t.Fatalf("reclaim kept the claimant's role %q (%v)", role, err)
+		}
 		do(required, http.MethodGet, "/identity", out.Key, "", http.StatusOK)
 		// After a reclaim the name is operator-owned, so promotion needs no confirmation.
 		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusCreated)
