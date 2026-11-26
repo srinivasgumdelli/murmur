@@ -18,6 +18,7 @@ import (
 
 func watch(ctx context.Context, c *client, o options, key string, output io.Writer) error {
 	cursor := "latest"
+	last := 0
 	encoder := json.NewEncoder(output)
 	for ctx.Err() == nil {
 		timeout := "30"
@@ -40,23 +41,25 @@ func watch(ctx context.Context, c *client, o options, key string, output io.Writ
 			}
 			continue
 		}
-		if cursor != "latest" {
-			last, _ := strconv.Atoi(cursor)
-			for _, msg := range response.Messages {
-				if msg.ID <= last || msg.Sender == o.agent {
-					continue
-				}
-				if err := encoder.Encode(msg); err != nil {
-					return err
-				}
-				if o.thread != "" {
-					if err := notifyCodex(ctx, o.thread, msg); err != nil && ctx.Err() == nil {
-						fmt.Fprintf(os.Stderr, "Murmur message %d logged, queue delivery unconfirmed: %v\n", msg.ID, err)
-					}
+		for _, msg := range response.Messages {
+			if msg.ID <= last {
+				continue
+			}
+			last = msg.ID
+			if msg.Sender == o.agent {
+				continue
+			}
+			if err := encoder.Encode(msg); err != nil {
+				return err
+			}
+			if o.thread != "" {
+				if err := notifyCodex(ctx, o.thread, msg); err != nil && ctx.Err() == nil {
+					fmt.Fprintf(os.Stderr, "Murmur message %d logged, queue delivery unconfirmed: %v\n", msg.ID, err)
 				}
 			}
 		}
-		cursor = strconv.Itoa(response.LastID)
+		last = max(last, response.LastID)
+		cursor = strconv.Itoa(last)
 	}
 	return nil
 }

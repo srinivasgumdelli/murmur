@@ -6,13 +6,13 @@ Murmur and Postgres run in Docker Compose. Each agent runs its client and the Mu
 
 Use the same Compose project and Postgres volume when upgrading an existing bus. Load a persistent `MURMUR_ADMIN_KEY` into the operator shell from your secret store. Compose passes it to the Murmur server. Preserve the server’s current `MURMUR_AUTH` setting for this step.
 
-From the checkout containing the launcher, start a new installation with `docker compose up -d --build`. For an existing installation with Postgres already running, replace just the application service:
+From the checkout containing the launcher, start a new installation with `docker compose up -d --build`. For an existing installation with Postgres already running, use this command to replace the application service.
 
 ```bash
 docker compose up -d --no-deps --build murmur
 ```
 
-The default project is `murmur`, the network is `murmur_default`, and the agent URL on that network is `http://murmur:4444`. Use your existing project name with `docker compose -p` if you customized it. Use the same bus URL for enrollment and launch because the saved credential is selected by URL and agent name.
+The default project is `murmur`, the network is `murmur_default`, and the agent URL on that network is `http://murmur:4444`. Use your existing project name with `docker compose -p` if you customized it. Pass the same `--url` or `MURMUR_URL` for enrollment and launch. Containers require an explicit address, and the saved credential is selected by URL and agent name.
 
 ## Build the agent image
 
@@ -26,7 +26,7 @@ docker build -f Dockerfile.agent \
 
 ## Enroll once and launch
 
-Use one credential volume per agent. The enrollment container needs the admin key and write access to that volume:
+Use one credential volume per agent. The enrollment container needs the admin key and write access to that volume.
 
 ```bash
 docker volume create murmur-reviewer-profile
@@ -57,7 +57,7 @@ For a standalone watcher, run `murmur watch` inside the same agent container wit
 
 1. Enroll active agents while keeping the current chat auth mode. `GET /identity` verifies the key even when chat auth is off.
 2. Start the agents and their watchers with the enrolled identity. Confirm they can poll and that heartbeats appear under the expected agent names. The operator dashboard shows key enrollment when signed in with the admin key.
-3. When active clients are ready, recreate only the Murmur service with required authentication:
+3. When active clients are ready, use the following command to recreate the Murmur service with required authentication.
 
    ```bash
    MURMUR_AUTH=required docker compose up -d --no-deps murmur
@@ -78,6 +78,8 @@ For a standalone watcher, run `murmur watch` inside the same agent container wit
 | `/mcp` or `/memories` returns 503 while the bus is healthy | Switch to `MURMUR_AUTH=required` after the active agents have credentials. |
 
 ## Credential lifecycle
+
+To save an existing agent key, supply it in `MURMUR_KEY` when you run `murmur enroll`. The launcher verifies the key before replacing the profile. On Windows hosts, Murmur encrypts saved keys for the account that runs enrollment, so use the same account to launch the agent.
 
 A profile is a reusable secret. Keep its volume restricted to that agent, and let it survive normal container replacement. Removing a local profile removes the client’s copy. The server still recognizes an issued key until it is removed on the server. Deleting an agent through the current admin API removes the agent record and all of its keys.
 

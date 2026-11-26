@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -133,5 +134,36 @@ func TestPollGarbageAfterIsRejected(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestPollQueryFailureReturnsServerError(t *testing.T) {
+	for _, afterWait := range []bool{false, true} {
+		t.Run(map[bool]string{false: "initial", true: "after wait"}[afterWait], func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer mock.Close()
+			heartbeat := func() {
+				mock.ExpectExec("UPDATE agents").WithArgs("tester").
+					WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			}
+			heartbeat()
+			if afterWait {
+				mock.ExpectQuery("SELECT id, sender").WithArgs(42, "tester").
+					WillReturnRows(pgxmock.NewRows(messageColumns))
+				heartbeat()
+			}
+			mock.ExpectQuery("SELECT id, sender").WithArgs(42, "tester").
+				WillReturnError(errors.New("database unavailable"))
+			rec := doPoll(t, mock, "agent=tester&after=42&timeout=1")
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("got HTTP %d, want 500", rec.Code)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }

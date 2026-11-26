@@ -61,7 +61,7 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	const admin = "integration-admin"
 	mux := http.NewServeMux()
 	mux.Handle("/keys", Keys(pool, admin))
-	mux.HandleFunc("GET /identity", Identity)
+	mux.HandleFunc("GET /identity", Identity("off"))
 	mux.Handle("/agents", Agents(pool))
 	mux.Handle("/agents/", Agents(pool))
 	mux.Handle("/messages", Messages(pool))
@@ -110,7 +110,7 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	enrolledKey := enroll("enrolled-first")
 	var identity model.Identity
 	rec := do(off, http.MethodGet, "/identity", enrolledKey, "", http.StatusOK)
-	if err := json.Unmarshal(rec.Body.Bytes(), &identity); err != nil || identity.Agent != "enrolled-first" || identity.Admin {
+	if err := json.Unmarshal(rec.Body.Bytes(), &identity); err != nil || identity.Agent != "enrolled-first" || identity.Admin || identity.ChatAuth != "off" {
 		t.Fatalf("auth-off identity response: %s (%v)", rec.Body, err)
 	}
 	do(off, http.MethodGet, "/identity", "", "", http.StatusUnauthorized)
