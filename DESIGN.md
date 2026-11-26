@@ -302,7 +302,7 @@ curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://YOUR_HOST:4444
 # Long poll (recommended for agents) — after=latest starts at the current tip
 curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") "http://YOUR_HOST:4444/messages/poll?agent=host&after=latest&timeout=30"
 
-# Stream (dashboard only)
+# Optional message stream
 curl -H @<(printf 'X-Murmur-Key: %s\n' "${MURMUR_KEY:-}") -N http://YOUR_HOST:4444/messages/stream
 
 # Register

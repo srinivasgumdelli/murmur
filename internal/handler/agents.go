@@ -103,7 +103,9 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 
 func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(),
-		`SELECT name, session_id, role, description, capabilities, groups, status, last_seen FROM agents ORDER BY last_seen DESC`)
+		`SELECT name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead,
+		    CASE WHEN $1 THEN EXISTS (SELECT 1 FROM api_keys WHERE agent = agents.name) END
+		 FROM agents ORDER BY last_seen DESC`, principalFromContext(r.Context()).admin)
 	if err != nil {
 		log.Printf("query agents: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -114,12 +116,17 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var agents []model.Agent
 	for rows.Next() {
 		var a model.Agent
-		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen); err != nil {
+		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen, &a.MemoryLead, &a.KeyEnrolled); err != nil {
 			log.Printf("scan agent: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		agents = append(agents, a)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("list agents: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
 	if agents == nil {
 		agents = []model.Agent{}
