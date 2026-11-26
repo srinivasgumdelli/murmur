@@ -10,10 +10,15 @@ permissions:
 
 jobs:
   test:
+    name: ${{ matrix.backend == 'postgres' && 'test' || 'SQLite' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [postgres, sqlite]
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:17
+        image: ${{ matrix.backend == 'postgres' && 'postgres:17' || '' }}
         env:
           POSTGRES_USER: murmur
           POSTGRES_PASSWORD: murmur
@@ -26,10 +31,15 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      MURMUR_TEST_PG_URL: postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable
+      MURMUR_TEST_PG_URL: ${{ matrix.backend == 'postgres' && 'postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: go test -race ./...
+      - if: matrix.backend == 'postgres'
+        run: go test -race ./...
+      - if: matrix.backend == 'sqlite'
+        run: |
+          CGO_ENABLED=0 go test ./internal/memory/sqlitestore
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/murmur" ./cmd/murmur
