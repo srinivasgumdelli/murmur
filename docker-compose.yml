@@ -4,7 +4,7 @@ services:
   murmur:
     build: .
     ports:
-      - "4444:4444"
+      - "${MURMUR_HOST_PORT:-4444}:4444"
     environment:
       - BUS_PORT=4444
       - BUS_DATABASE_URL=postgres://murmur:murmur@db:5432/murmur?sslmode=disable
