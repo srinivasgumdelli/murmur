@@ -7,7 +7,7 @@ ARG AGENT_UID=1000
 ARG AGENT_GID=1000
 USER root
 COPY --from=murmur /murmur /usr/local/bin/murmur
-RUN mkdir -p /var/lib/murmur-agent \
-    && chown "${AGENT_UID}:${AGENT_GID}" /var/lib/murmur-agent \
-    && chmod 0700 /var/lib/murmur-agent
+RUN mkdir -p /var/lib/murmur-agent /var/lib/murmur-client/codex /var/lib/murmur-client/claude \
+    && chown -R "${AGENT_UID}:${AGENT_GID}" /var/lib/murmur-agent /var/lib/murmur-client \
+    && chmod 0700 /var/lib/murmur-agent /var/lib/murmur-client /var/lib/murmur-client/*
 USER ${AGENT_UID}:${AGENT_GID}

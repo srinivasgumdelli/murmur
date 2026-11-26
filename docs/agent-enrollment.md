@@ -2,6 +2,26 @@
 
 Murmur and Postgres run in Docker Compose. Each agent runs its client and the Murmur launcher in its own container. A trusted enrollment container obtains a key for one agent and saves it in that agent’s private volume. The regular agent mounts the volume read-only and gets its MCP configuration when the launcher starts the client.
 
+## Use the setup script
+
+Run the script from this checkout with Docker Compose v2 and curl available. Load a persistent `MURMUR_ADMIN_KEY` from your secret store and export it in the operator shell. For a new bus, choose `MURMUR_AUTH=required` to enable memory at startup. For an existing bus, use its current auth mode and the same `COMPOSE_PROJECT_NAME` to retain its Postgres volume. Use the cutover steps below before moving existing keyless agents to required auth. The script uses the same project name as Docker Compose. If you previously started the bus from a different checkout directory without an explicit project name, set `COMPOSE_PROJECT_NAME` to the original name. Set `MURMUR_HOST_PORT` if the default host port, 4444, is already in use.
+
+```bash
+MURMUR_AUTH=required ./scripts/docker-setup.sh up
+MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh enroll reviewer
+./scripts/docker-setup.sh connect reviewer murmur -- claude
+```
+
+The script checks server readiness and builds an image for each agent from your local Claude Code or Codex base at enrollment. The default tag uses the Compose project and the agent name, so Claude Code and Codex agents can share one bus. If you set `MURMUR_AGENT_IMAGE` to override the tag, use the same value to enroll, connect, and watch that agent. Set `AGENT_UID` and `AGENT_GID` if the image uses a different container user than 1000:1000. The launch command bind-mounts its current directory as the agent workspace. To launch from a different checkout, invoke the script by absolute path from that directory. It passes the exported `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` along with any corresponding `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. The agent's client configuration and login state persist in a separate Docker volume. Protect that volume like the credential volume. Run enrollment again after a server upgrade to refresh the launcher in the agent image.
+
+For Codex, enroll with your Codex base image and launch with `-- codex`. To receive chat notifications in an existing Codex thread, use an image whose Codex CLI supports `codex queue`, and use the thread ID from the same agent's persisted Codex state. Either run a standalone watcher or set `MURMUR_CODEX_THREAD_ID` when using `connect` with Codex to watch for the lifetime of the client.
+
+```bash
+MURMUR_CODEX_THREAD_ID="$thread_id" ./scripts/docker-setup.sh watch reviewer
+```
+
+The watcher can also stream chat messages to stdout without a thread ID. The launcher configures memory MCP for Claude Code or Codex. Set `MURMUR_CLAUDE_HOOKS=1` on `connect` to enable the optional memory hooks for Claude Code.
+
 ## Prepare the server
 
 Use the same Compose project and Postgres volume when upgrading an existing bus. Load a persistent `MURMUR_ADMIN_KEY` into the operator shell from your secret store. Compose passes it to the Murmur server. Preserve the server’s current `MURMUR_AUTH` setting for this step.

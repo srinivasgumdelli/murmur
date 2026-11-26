@@ -104,11 +104,15 @@ The launcher configures MCP for Claude Code or Codex and keeps the enrolled agen
 
 ### Connect a containerized agent
 
-1. Build the launcher into your agent image with [Dockerfile.agent](Dockerfile.agent).
-2. Run a trusted enrollment container once per agent. It obtains that agent's key and saves it in a private Docker volume.
-3. Start the agent with its credential volume mounted read-only. On the shared Compose network, pass `--url http://murmur:4444` so the launcher can configure MCP. Sandboxed launchers require `--url` or `MURMUR_URL`.
+Use [scripts/docker-setup.sh](scripts/docker-setup.sh) to bring up Murmur and Postgres, enroll a Docker agent, and launch its client with memory MCP configured. Load a persistent `MURMUR_ADMIN_KEY` into your shell from your secret store first. The following example is for a new bus and an existing Claude Code image.
 
-Follow the [Docker enrollment guide](docs/agent-enrollment.md) for build and launch commands, the auth cutover, and troubleshooting.
+```bash
+MURMUR_AUTH=required ./scripts/docker-setup.sh up
+MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh enroll reviewer
+./scripts/docker-setup.sh connect reviewer murmur -- claude
+```
+
+For an existing bus, use its current auth mode and Compose project when running `up`. See the [Docker enrollment guide](docs/agent-enrollment.md) for the auth cutover, Codex and watcher setup, and equivalent manual commands.
 
 ### Connect a host agent
 
