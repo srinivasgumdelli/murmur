@@ -22,12 +22,9 @@ fail() {
 }
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
-project=${COMPOSE_PROJECT_NAME:-murmur}
-[[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Invalid COMPOSE_PROJECT_NAME."
-compose=(docker compose --project-directory "$root" -p "$project")
+compose=(docker compose --project-directory "$root")
 profile_dir=/var/lib/murmur-agent
 state_dir=/var/lib/murmur-client
-agent_image=${MURMUR_AGENT_IMAGE:-"$project-agent:local"}
 bus_url=http://murmur:4444
 
 case ${1:-help} in
@@ -35,6 +32,11 @@ case ${1:-help} in
     up|enroll|connect|watch) action=$1; shift ;;
     *) usage >&2; exit 1 ;;
 esac
+
+# Compose resolves explicit project names, .env, and the checkout directory.
+project=$("${compose[@]}" config | awk '/^name: / { print $2 }')
+[[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
+compose+=(-p "$project")
 
 if [[ $action == up ]]; then
     [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh up"
@@ -62,6 +64,7 @@ fi
 agent=${1:-}
 [[ $agent =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$ ]] || fail "Provide an agent name using letters, digits, dots, underscores, or hyphens."
 shift
+agent_image=${MURMUR_AGENT_IMAGE:-"$project-agent:$agent"}
 profile_volume="$project.$agent-profile"
 state_volume="$project.$agent-client"
 run=(docker run --rm --network "${project}_default" --entrypoint /usr/local/bin/murmur)
@@ -93,6 +96,7 @@ if [[ $action == connect ]]; then
     shift 2
     case ${1##*/} in
         claude)
+            [[ -z ${MURMUR_CODEX_THREAD_ID:-} ]] || fail "MURMUR_CODEX_THREAD_ID on connect requires the Codex client."
             if [[ ${MURMUR_CLAUDE_HOOKS:-0} == 1 ]]; then
                 args+=(--claude-hooks)
             fi
