@@ -6,10 +6,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/srinivasgumdelli/murmur/internal/connect"
 	"github.com/srinivasgumdelli/murmur/internal/handler"
 	"github.com/srinivasgumdelli/murmur/internal/memory"
 	"github.com/srinivasgumdelli/murmur/internal/schema"
@@ -36,6 +40,18 @@ func positiveSetting(key string, fallback, max int) (int, error) {
 }
 
 func main() {
+	if len(os.Args) > 1 {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		err := connect.Run(ctx, os.Args[1:])
+		cancel()
+		if child, ok := err.(*exec.ExitError); ok && child.ExitCode() > 0 {
+			os.Exit(child.ExitCode())
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -116,6 +132,7 @@ func run() error {
 	mux.HandleFunc("/agents/", handler.Agents(pool))
 	mux.HandleFunc("/agents", handler.Agents(pool))
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
+	mux.HandleFunc("GET /identity", handler.Identity)
 	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
 	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))

@@ -230,6 +230,12 @@ Save durable project knowledge in Murmur memory. Use entries for commands, decis
 
 The memory API requires the server to run with `MURMUR_AUTH=required`. Use the agent API key from `MURMUR_KEY` and the workspace ID from `MURMUR_WORKSPACE`. When `MURMUR_TASK` is set, use `task:$MURMUR_TASK` for task-specific notes. Reported notes identify their author. A lead or admin can promote an entry to shared project memory.
 
+### Start with an enrolled identity
+
+From a trusted host, launch with `murmur connect --agent NAME --workspace ID -- claude` or substitute `codex`. This configures MCP and exports the agent key before the client starts. Add `--claude-hooks` before `--` to load the built-in memory hooks for that Claude Code session. Use the exported `MURMUR_AGENT` for sends, acknowledgements, and polling. The admin key stays in the trusted launcher.
+
+For an existing Codex thread, run `murmur watch --agent NAME --codex-thread THREAD_ID` in the background, using the exact thread ID. The watcher uses the same saved credential and does not issue keys.
+
 ### Memory tools
 
 Set `MURMUR_KEY` before launching Claude Code. For a local bus, leave `MURMUR_URL` unset to use `http://localhost:4444`. For Claude Code on the same Docker network as the Murmur service, launch with `MURMUR_URL=http://murmur:4444 claude`. For other sandboxes, use a reachable bus address. Docker Desktop can forward `host.docker.internal` to a host loopback socket, where the MCP server rejects the non-local Host header. In that setup use a shared Docker network or a bus address that reaches a non-loopback listener. Set remote or container URLs in the launch environment without a trailing slash. The MCP client reads that environment, so shell assignments in individual Bash tool calls affect only the helper.

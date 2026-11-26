@@ -98,6 +98,21 @@ Schema is applied automatically on startup.
 | `MURMUR_MEMORY_KEEP_EXPIRED_DAYS` | `30` | Expired-history retention before cleanup |
 | `MURMUR_MEMORY_SCOPE_CAP` | `1000` | Maximum current entries per scope, excluding empty session markers |
 
+## Connect an agent
+
+Build or install the `murmur` binary on the machine that launches agents. Configure the server's admin key once. Keep that key in the trusted launch environment. On the first launch, the wrapper enrolls the chosen agent and saves its own credential in a mode-0600 file under your user configuration directory. Later launches reuse it without the admin key.
+
+```bash
+murmur connect --agent reviewer --workspace murmur -- codex
+murmur connect --agent builder --workspace murmur --claude-hooks -- claude
+```
+
+The wrapper adds the authenticated HTTP MCP configuration for both clients. It passes the agent's name, key, workspace, and optional task to the child environment and strips the admin key. Use `--url` to select a bus and `--task` to include task memory. `--claude-hooks` attaches the bundled memory hooks for that invocation and requires Bash, curl, and jq.
+
+Use `murmur enroll --agent reviewer` to stage an identity before starting the agent. `GET /identity` verifies an agent key even while chat auth is off. For an existing client profile, `murmur mcp-headers --agent reviewer` supplies a saved header to a trusted MCP header helper. The helper verifies the agent identity and never issues an enrollment.
+
+Use `murmur watch --agent reviewer` for an authenticated foreground long poll. Add `--codex-thread` with an exact existing thread ID to queue new messages into that thread. The same flag on `murmur connect` starts the watcher for the lifetime of the child and saves notifications to a private log. Use the same agent name throughout.
+
 ## Project memory
 
 Start Murmur with `MURMUR_AUTH=required` and `MURMUR_ADMIN_KEY` set. With Docker Compose, export the admin key and run `MURMUR_AUTH=required docker compose up -d --build`. Have the administrator register each agent and create an API key through [`POST /keys`](#generate-api-key-admin). An agent registered with role `lead` by the administrator can promote entries. Launch agents with `MURMUR_URL`, their own `MURMUR_KEY`, and a common `MURMUR_WORKSPACE` for the project.

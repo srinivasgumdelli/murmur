@@ -15,10 +15,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/srinivasgumdelli/murmur/internal/model"
 )
 
 type createKeyRequest struct {
-	Agent string `json:"agent"`
+	Agent  string `json:"agent"`
+	Enroll bool   `json:"enroll,omitempty"`
 }
 
 type createKeyResponse struct {
@@ -65,6 +67,11 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 			return
 		}
 
+		if req.Enroll && !model.ValidAgentName(req.Agent) {
+			http.Error(w, "invalid agent name", http.StatusBadRequest)
+			return
+		}
+
 		key, err := generateKey()
 		if err != nil {
 			log.Printf("generate key: %v", err)
@@ -72,10 +79,7 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 			return
 		}
 
-		_, err = pool.Exec(r.Context(),
-			`INSERT INTO api_keys (key_hash, agent) VALUES ($1, $2)`,
-			hashKey(key), req.Agent,
-		)
+		err = issueKey(r.Context(), pool, req, hashKey(key))
 		if err != nil {
 			log.Printf("insert key: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -86,6 +90,32 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(createKeyResponse{Key: key, Agent: req.Agent})
 	}
+}
+
+func issueKey(ctx context.Context, pool *pgxpool.Pool, req createKeyRequest, keyHash string) error {
+	const insertKey = `INSERT INTO api_keys (key_hash, agent) VALUES ($1, $2)`
+	if !req.Enroll {
+		_, err := pool.Exec(ctx, insertKey, keyHash, req.Agent)
+		return err
+	}
+	return pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		// An enrolled identity keeps its existing role, groups and session.
+		_, err := tx.Exec(ctx, `INSERT INTO agents (name, session_id, role, status)
+			VALUES ($1, gen_random_uuid()::text, 'coding-agent', 'offline')
+			ON CONFLICT (name) DO NOTHING`, req.Agent)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, insertKey, keyHash, req.Agent)
+		return err
+	})
+}
+
+func Identity(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	_ = json.NewEncoder(w).Encode(model.Identity{Agent: p.agent, Admin: p.admin, Lead: p.lead})
 }
 
 type principal struct {
@@ -142,7 +172,8 @@ func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.
 		}
 
 		key := requestKey(r)
-		if authMode == "" || authMode == "off" {
+		identityRoute := r.URL.Path == "/identity"
+		if !identityRoute && (authMode == "" || authMode == "off") {
 			// Chat remains open. The configured admin key can still manage
 			// protected roles when the server is running without chat auth.
 			if matchesAdminKey(key, adminKey) {
@@ -172,7 +203,7 @@ func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.
 		}
 
 		if p.agent == "" && !p.admin {
-			if authMode != "optional" {
+			if authMode != "optional" || identityRoute {
 				http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
 				return
 			}
