@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -8,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func Health(pool *pgxpool.Pool, startTime time.Time) http.HandlerFunc {
+func Health(pool *pgxpool.Pool, startTime time.Time, memoryCheck func(context.Context) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var msgCount int
 		var agentCount int
@@ -17,12 +18,24 @@ func Health(pool *pgxpool.Pool, startTime time.Time) http.HandlerFunc {
 
 		uptime := time.Since(startTime).Round(time.Second)
 
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		result := map[string]any{
 			"status":   "ok",
 			"messages": msgCount,
 			"agents":   agentCount,
 			"uptime":   uptime.String(),
-		})
+		}
+		status := http.StatusOK
+		if memoryCheck != nil {
+			if err := memoryCheck(r.Context()); err != nil {
+				result["status"] = "degraded"
+				result["memory"] = "unavailable"
+				status = http.StatusServiceUnavailable
+			} else {
+				result["memory"] = "ok"
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(result)
 	}
 }
