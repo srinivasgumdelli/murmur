@@ -75,17 +75,17 @@ if [[ ! -d $source_dir ]]; then
 fi
 [[ -x $source_dir/scripts/docker-setup.sh ]] || fail "Invalid Murmur checkout at $source_dir."
 
-if [[ ! -e $source_dir/.env ]]; then
-    # Keep the generated admin key outside the Docker build context.
-    printf 'COMPOSE_PROJECT_NAME=%s\nMURMUR_AUTH=required\n' "$project" > "$lock/compose.env"
-    mv -- "$lock/compose.env" "$source_dir/.env"
-fi
-
 if [[ ! -f $state ]]; then
     MURMUR_ADMIN_KEY=$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')
     [[ $MURMUR_ADMIN_KEY =~ ^[a-f0-9]{64}$ ]] || fail "Could not generate a Murmur administrator key."
     printf '%s\n' "$project" "$MURMUR_ADMIN_KEY" > "$lock/install-state"
     mv -- "$lock/install-state" "$state"
+fi
+
+if [[ ! -e $source_dir/.env ]]; then
+    # Keep the generated admin key outside the Docker build context.
+    printf 'COMPOSE_PROJECT_NAME=%s\nMURMUR_AUTH=required\n' "$project" > "$lock/compose.env"
+    mv -- "$lock/compose.env" "$source_dir/.env"
 fi
 
 export COMPOSE_PROJECT_NAME=$project MURMUR_AUTH=required MURMUR_ADMIN_KEY
