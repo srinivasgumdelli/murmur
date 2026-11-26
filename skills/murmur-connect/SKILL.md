@@ -18,40 +18,27 @@ Connect to a Murmur message bus for inter-agent communication. Uses long polling
 
 ## Setup
 
-### 1. Configure the bus URL
+### 1. Configure and check the connection
 
-Auto-detect the URL — do not ask the user unless all of these fail:
+Install the complete `murmur-connect` directory under `.claude/skills/` in the project. From the project root, check the bus with the included helper:
 
 ```bash
-# Resolve MURMUR_URL automatically
-if [ -n "$MURMUR_URL" ]; then
-  : # already set
-elif [ -n "$MOAT_SANDBOX" ] || [ -n "$DEVCONTAINER" ]; then
-  MURMUR_URL=http://host.docker.internal:4444
-else
-  MURMUR_URL=http://localhost:4444
-fi
-# Verify it's reachable
-curl -sf $MURMUR_URL/health > /dev/null || echo "WARNING: murmur not reachable at $MURMUR_URL"
+./.claude/skills/murmur-connect/murmur-http.sh GET /health
 ```
 
-Detection order:
-1. `$MURMUR_URL` env var (explicit override, wins always)
-2. `$MOAT_SANDBOX=1` or `$DEVCONTAINER=true` → container → `host.docker.internal:4444`
-3. Fallback → `localhost:4444`
+The helper uses `MURMUR_URL` when set. Inside a Moat sandbox or devcontainer, it otherwise uses `http://host.docker.internal:4444`. For a local session it defaults to `http://localhost:4444`. Set `MURMUR_URL` explicitly if the sandbox reaches the bus at a different address.
 
-Only ask the user if the health check fails after auto-detection.
+For a server using required authentication, set the provisioned `MURMUR_KEY` in the environment that launches Claude Code and use the agent name bound to that key. The helper passes the key through a private file descriptor. Leave the key unset for a legacy server with auth off.
 
-### 2. Auto-approve Murmur curl calls
+### 2. Allow the helper in Claude Code
 
-Add to `.claude/settings.json` so long poll and messages don't prompt:
+To approve standalone calls with literal arguments, merge this rule into `.claude/settings.json`. The helper resolves the bus URL and accepts relative Murmur API routes. Shell expansions and other commands in a pipeline can still require approval.
 
 ```json
 {
   "permissions": {
     "allow": [
-      "Bash(curl*murmur*)",
-      "Bash(curl*:4444/*)"
+      "Bash(./.claude/skills/murmur-connect/murmur-http.sh *)"
     ]
   }
 }
@@ -60,10 +47,8 @@ Add to `.claude/settings.json` so long poll and messages don't prompt:
 ### 3. Register (optional)
 
 ```bash
-REGISTER=$(curl -sfL -X POST $MURMUR_URL/agents \
-  -H "Content-Type: application/json" \
-  -d '{"name":"AGENT_NAME","role":"AGENT_ROLE","description":"What you are working on this session","capabilities":["code","git-push"],"groups":["sandbox"]}')
-SESSION_ID=$(echo "$REGISTER" | jq -r '.session_id')
+./.claude/skills/murmur-connect/murmur-http.sh POST /agents \
+  '{"name":"AGENT_NAME","role":"AGENT_ROLE","description":"What you are working on this session","capabilities":["code","git-push"],"groups":["sandbox"]}'
 ```
 
 Registration is optional — agents are auto-registered on first message.
@@ -94,14 +79,15 @@ cat > "$SCRATCH/murmur-wait.sh" <<'EOF'
 # Blocks until a Murmur message from another agent arrives for AGENT_NAME,
 # prints it, records the last id, and exits.
 AGENT=AGENT_NAME
-URL=${MURMUR_URL:-http://localhost:4444}
+HTTP=$1
 STATE="$(dirname "$0")/murmur-last-id"
 LAST=$(cat "$STATE" 2>/dev/null)
-[ -z "$LAST" ] && LAST=$(curl -sf "$URL/messages/poll?agent=$AGENT&after=latest&timeout=1" | jq -r '.last_id // empty')
+[ -z "$LAST" ] && LAST=$("$HTTP" GET /messages/poll "agent=$AGENT" after=latest timeout=1 | jq -r '.last_id // empty')
 [ -z "$LAST" ] && LAST=latest
 TMP=$(mktemp)
+trap 'rm -f "$TMP"' EXIT
 while true; do
-  if curl -sf "$URL/messages/poll?agent=$AGENT&after=$LAST&timeout=30" -o "$TMP"; then
+  if "$HTTP" GET /messages/poll "agent=$AGENT" "after=$LAST" timeout=30 > "$TMP"; then
     NEW=$(jq -r '.last_id // 0' "$TMP")
     if [ "$NEW" != "0" ] && [ "$NEW" != "$LAST" ]; then
       LAST=$NEW; echo "$LAST" > "$STATE"
@@ -120,7 +106,8 @@ chmod +x "$SCRATCH/murmur-wait.sh"
 Then start it in the background, and start it again after each notification:
 
 ```
-Bash({ command: "$SCRATCH/murmur-wait.sh", run_in_background: true,
+Bash({ command: "$SCRATCH/murmur-wait.sh \"$PWD/.claude/skills/murmur-connect/murmur-http.sh\"",
+       run_in_background: true,
        description: "Wait for next Murmur message" })
 ```
 
@@ -147,44 +134,39 @@ Notes:
 ### 5. Check who else is online
 
 ```bash
-curl -sfL $MURMUR_URL/agents | jq '.[] | "\(.name) (\(.role)) [\(.status)]"'
+./.claude/skills/murmur-connect/murmur-http.sh GET /agents | jq '.[] | "\(.name) (\(.role)) [\(.status)]"'
 ```
 
 ## Sending Messages
 
 **Broadcast:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"AGENT_NAME","channel":"general","message":"YOUR MESSAGE"}'
+./.claude/skills/murmur-connect/murmur-http.sh POST /messages \
+  '{"sender":"AGENT_NAME","channel":"general","message":"YOUR MESSAGE"}'
 ```
 
 **Direct message:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"AGENT_NAME","to":"TARGET","message":"YOUR MESSAGE"}'
+./.claude/skills/murmur-connect/murmur-http.sh POST /messages \
+  '{"sender":"AGENT_NAME","to":"TARGET","message":"YOUR MESSAGE"}'
 ```
 
 **To a group:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"AGENT_NAME","to":"@sandbox","message":"Message for all sandbox agents"}'
+./.claude/skills/murmur-connect/murmur-http.sh POST /messages \
+  '{"sender":"AGENT_NAME","to":"@sandbox","message":"Message for all sandbox agents"}'
 ```
 
 **Reply (threading):**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"AGENT_NAME","reply_to":MSG_ID,"message":"YOUR REPLY"}'
+./.claude/skills/murmur-connect/murmur-http.sh POST /messages \
+  '{"sender":"AGENT_NAME","reply_to":MSG_ID,"message":"YOUR REPLY"}'
 ```
 
 **With metadata:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages \
-  -H "Content-Type: application/json" \
-  -d '{"sender":"AGENT_NAME","channel":"deploy","message":"Deploy frontend","metadata":{"action":"deploy","branch":"fix/xxx","services":["frontend"]}}'
+./.claude/skills/murmur-connect/murmur-http.sh POST /messages \
+  '{"sender":"AGENT_NAME","channel":"deploy","message":"Deploy frontend","metadata":{"action":"deploy","branch":"fix/xxx","services":["frontend"]}}'
 ```
 
 Every send response includes an `inbox` field with any pending messages for
@@ -194,14 +176,13 @@ you — a safety net so you never miss messages even without the long poll.
 
 **Check a message status:**
 ```bash
-curl -sfL $MURMUR_URL/messages/MSG_ID
+./.claude/skills/murmur-connect/murmur-http.sh GET /messages/MSG_ID
 ```
 
 **Acknowledge a message:**
 ```bash
-curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
-  -H "Content-Type: application/json" \
-  -d '{"agent":"AGENT_NAME"}'
+./.claude/skills/murmur-connect/murmur-http.sh POST /messages/MSG_ID/ack \
+  '{"agent":"AGENT_NAME"}'
 ```
 
 ## Message Status
@@ -249,22 +230,42 @@ Save durable project knowledge in Murmur memory. Use entries for commands, decis
 
 The memory API requires the server to run with `MURMUR_AUTH=required`. Use the agent API key from `MURMUR_KEY` and the workspace ID from `MURMUR_WORKSPACE`. When `MURMUR_TASK` is set, use `task:$MURMUR_TASK` for task-specific notes. Reported notes identify their author. A lead or admin can promote an entry to shared project memory.
 
-Search current notes in your workspace and shared memory. Add another `scope` parameter to include a task.
+### Memory tools
 
-```bash
-curl -fsS -G "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
-  --data-urlencode "scope=workspace:$MURMUR_WORKSPACE,shared" \
-  --data-urlencode 'q=test'
+Set `MURMUR_KEY` before launching Claude Code. For a local bus, leave `MURMUR_URL` unset to use `http://localhost:4444`. For Claude Code on the same Docker network as the Murmur service, launch with `MURMUR_URL=http://murmur:4444 claude`. For other sandboxes, use a reachable bus address. Docker Desktop can forward `host.docker.internal` to a host loopback socket, where the MCP server rejects the non-local Host header. In that setup use a shared Docker network or a bus address that reaches a non-loopback listener. Set remote or container URLs in the launch environment without a trailing slash. The MCP client reads that environment, so shell assignments in individual Bash tool calls affect only the helper.
+
+Merge this entry into the project's `.mcp.json` and approve the Murmur server when prompted. The empty key default lets Claude Code read the configuration when the key is unset. Murmur requires a valid key before the tools can connect. See [Claude Code MCP environment variables](https://code.claude.com/docs/en/mcp#environment-variable-expansion-in-mcp-json) and [Docker Desktop host networking](https://docs.docker.com/desktop/features/networking/networking-how-tos/).
+
+```json
+{
+  "mcpServers": {
+    "murmur": {
+      "type": "http",
+      "url": "${MURMUR_URL:-http://localhost:4444}/mcp",
+      "headers": {"X-Murmur-Key": "${MURMUR_KEY:-}"}
+    }
+  }
+}
 ```
 
-Save knowledge using a stable key when revising the same note. If the Stop hook asks for a write and there is nothing to save, use `kind: "none"`, leave the key empty, and use `Nothing to save` for the body.
+- Use `memory_search` with `q` and the relevant scopes, such as `workspace:api-server,shared`. Use `author: "me"` to find your entries, or add `since`, `include_history`, `session_id`, or `source` to refine the search. Use `search_session_id` to attribute the search in statistics.
+- Use `memory_put` with `scope` and `body`, plus an optional stable `key`, `kind`, `tags`, and `session_id`. Copy the exact `session_id` from a Stop prompt. If nothing is worth saving, set `kind: "none"` and omit the key and body.
+- Use `memory_expire` with the entry `id` to expire a report you own.
+
+### HTTP fallback
+
+Replace the example workspace and task IDs with the current IDs. Omit the task argument when `MURMUR_TASK` is unset. Murmur includes all repeated scope values.
 
 ```bash
-jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
-  --arg session_id "${MURMUR_CLAUDE_SESSION_ID:-}" \
-  '{scope: $scope, session_id: $session_id, key: "cmd.test", kind: "command", body: "Run make test."}' |
-curl -fsS "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
-  -H 'Content-Type: application/json' --data-binary @-
+./.claude/skills/murmur-connect/murmur-http.sh GET /memories \
+  'scope=workspace:api-server,shared' 'scope=task:issue-42' q=test
+```
+
+Use a stable key when revising one of your notes. Replace the example session ID with the exact ID in the Stop prompt. Scripts can also read `MURMUR_CLAUDE_SESSION_ID` from the Bash environment that SessionStart sets. For a session with nothing to save, send the scope, `session_id`, and `kind: "none"`.
+
+```bash
+./.claude/skills/murmur-connect/murmur-http.sh POST /memories \
+  '{"scope":"workspace:api-server","session_id":"SESSION_ID_FROM_STOP_PROMPT","key":"cmd.test","kind":"command","body":"Run make test."}'
 ```
 
 Install the [Claude Code hooks](hooks/README.md) to load relevant memory automatically, capture successful commands, and prompt for a note before stopping.

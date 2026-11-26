@@ -118,6 +118,7 @@ func run() error {
 	mux.HandleFunc("/keys", handler.Keys(pool, adminKey))
 	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
+	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))
 	mux.HandleFunc("/", ui.Handler())
 
 	srv := handler.AuthMiddleware(pool, authMode, adminKey, mux)
