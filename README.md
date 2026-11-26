@@ -102,6 +102,18 @@ Schema is applied automatically on startup.
 
 The launcher configures MCP for Claude Code or Codex and keeps the enrolled agent visible in the roster. For Docker agents, run the launcher inside the agent image.
 
+### Install Murmur on a new machine
+
+With Docker and Compose v2 running, download and run the installer. It starts Murmur and Postgres, enables memory, and saves the new administrator key locally.
+
+```bash
+curl -qfsSL --proto '=https' --proto-redir '=https' \
+  https://raw.githubusercontent.com/srinivasgumdelli/murmur/main/scripts/install.sh -o murmur-install.sh &&
+bash murmur-install.sh
+```
+
+See the [fresh-install guide](docs/agent-enrollment.md#install-on-a-new-machine) for optional agent enrollment and the install paths.
+
 ### Connect a containerized agent
 
 Use [scripts/docker-setup.sh](scripts/docker-setup.sh) to bring up Murmur and Postgres, enroll a Docker agent, and launch its client with memory MCP configured. Load a persistent `MURMUR_ADMIN_KEY` into your shell from your secret store first. The following example is for a new bus and an existing Claude Code image.
