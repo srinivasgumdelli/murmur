@@ -242,3 +242,29 @@ curl -sfL -X POST $MURMUR_URL/messages/MSG_ID/ack \
 | Health | `GET /health` |
 | Agents | `GET /agents` |
 | Dashboard | Open `$MURMUR_URL` in browser |
+
+## Project memory
+
+Save durable project knowledge in Murmur memory. Use entries for commands, decisions, conventions, and pitfalls future agents need. Use chat for coordination and put project knowledge in Murmur memory instead of local memory files.
+
+The memory API requires the server to run with `MURMUR_AUTH=required`. Use the agent API key from `MURMUR_KEY` and the workspace ID from `MURMUR_WORKSPACE`. When `MURMUR_TASK` is set, use `task:$MURMUR_TASK` for task-specific notes. Reported notes identify their author. A lead or admin can promote an entry to shared project memory.
+
+Search current notes in your workspace and shared memory. Add another `scope` parameter to include a task.
+
+```bash
+curl -fsS -G "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
+  --data-urlencode "scope=workspace:$MURMUR_WORKSPACE,shared" \
+  --data-urlencode 'q=test'
+```
+
+Save knowledge using a stable key when revising the same note. If the Stop hook asks for a write and there is nothing to save, use `kind: "none"`, leave the key empty, and use `Nothing to save` for the body.
+
+```bash
+jq -n --arg scope "workspace:$MURMUR_WORKSPACE" \
+  --arg session_id "${MURMUR_CLAUDE_SESSION_ID:-}" \
+  '{scope: $scope, session_id: $session_id, key: "cmd.test", kind: "command", body: "Run make test."}' |
+curl -fsS "$MURMUR_URL/memories" -H "X-Murmur-Key: $MURMUR_KEY" \
+  -H 'Content-Type: application/json' --data-binary @-
+```
+
+Install the [Claude Code hooks](hooks/README.md) to load relevant memory automatically, capture successful commands, and prompt for a note before stopping.
