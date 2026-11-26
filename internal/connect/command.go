@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/srinivasgumdelli/murmur/internal/model"
 	"github.com/srinivasgumdelli/murmur/skills/murmur-connect/hooks"
@@ -223,25 +224,47 @@ func launch(ctx context.Context, c *client, o options, key string, argv []string
 	cmd.Env = childEnvironment(os.Environ(), env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 
-	if o.thread == "" {
-		return cmd.Run()
+	// An MCP-only client still appears live in the operator dashboard.
+	if err := c.heartbeat(ctx, o.agent, key); err != nil {
+		return fmt.Errorf("start agent presence: %w", err)
 	}
-	logfile, err := os.CreateTemp("", "murmur-inbox-*.jsonl")
-	if err != nil {
-		return err
+	var output io.Writer
+	if o.thread != "" {
+		logfile, err := os.CreateTemp("", "murmur-inbox-*.jsonl")
+		if err != nil {
+			return err
+		}
+		defer logfile.Close()
+		fmt.Fprintf(os.Stderr, "Murmur notification log: %s\n", logfile.Name())
+		output = logfile
 	}
-	defer logfile.Close()
-	fmt.Fprintf(os.Stderr, "Murmur notification log: %s\n", logfile.Name())
 	watchCtx, cancel := context.WithCancel(ctx)
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		if err := watch(watchCtx, c, o, key, logfile); err != nil && watchCtx.Err() == nil {
+		if o.thread == "" {
+			keepPresence(watchCtx, c, o.agent, key)
+		} else if err := watch(watchCtx, c, o, key, output); err != nil && watchCtx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "Murmur watcher stopped: %v\n", err)
 		}
 	}()
-	err = cmd.Run()
+	err := cmd.Run()
 	cancel()
 	<-finished
 	return err
+}
+
+func keepPresence(ctx context.Context, c *client, agent, key string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := c.heartbeat(ctx, agent, key); err != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "Murmur heartbeat: %v\n", err)
+			}
+		}
+	}
 }

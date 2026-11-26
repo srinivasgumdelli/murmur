@@ -216,6 +216,11 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 	request(required, direct+"/ack", outsiderKey, `{"agent":"others"}`, http.StatusNotFound)
 	request(required, direct+"/ack", senderKey, `{"agent":"sends-first"}`, http.StatusNotFound)
 
+	presence := request(required, "/agents/registers-first/heartbeat?inbox=false", freshKey, "", http.StatusOK)
+	var heartbeat heartbeatResponse
+	if err := json.Unmarshal(presence.Body.Bytes(), &heartbeat); err != nil || heartbeat.Inbox != nil || heartbeat.Name != "registers-first" {
+		t.Fatalf("presence heartbeat must omit the inbox: %s (%v)", presence.Body, err)
+	}
 	senderPollPath := fmt.Sprintf("/messages/poll?agent=sends-first&after=%d", directID-1)
 	for _, tc := range []struct {
 		mode    string
