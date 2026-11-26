@@ -33,13 +33,14 @@ const usage = `Usage:
 var scopeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@:/-]{0,127}$`)
 
 type options struct {
-	url       string
-	agent     string
-	workspace string
-	task      string
-	dir       string
-	thread    string
-	hooks     bool
+	url           string
+	enrollmentURL string
+	agent         string
+	workspace     string
+	task          string
+	dir           string
+	thread        string
+	hooks         bool
 }
 
 func Run(ctx context.Context, args []string) error {
@@ -62,6 +63,9 @@ func Run(ctx context.Context, args []string) error {
 	flags.StringVar(&o.url, "url", defaultURL(), "Murmur base URL")
 	flags.StringVar(&o.agent, "agent", os.Getenv("MURMUR_AGENT"), "registered agent name")
 	flags.StringVar(&o.dir, "profile-dir", os.Getenv("MURMUR_PROFILE_DIR"), "private credential directory")
+	if command == "connect" || command == "enroll" {
+		flags.StringVar(&o.enrollmentURL, "enrollment-url", "", "private Docker enrollment URL")
+	}
 	if command == "connect" {
 		flags.StringVar(&o.workspace, "workspace", os.Getenv("MURMUR_WORKSPACE"), "memory workspace ID")
 		flags.StringVar(&o.task, "task", os.Getenv("MURMUR_TASK"), "optional memory task ID")

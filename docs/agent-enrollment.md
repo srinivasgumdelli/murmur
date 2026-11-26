@@ -50,6 +50,26 @@ MURMUR_CODEX_THREAD_ID="$thread_id" ./scripts/docker-setup.sh watch reviewer
 
 The watcher can also stream chat messages to stdout without a thread ID. The launcher configures memory MCP for Claude Code or Codex. Set `MURMUR_CLAUDE_HOOKS=1` on `connect` to enable the optional memory hooks for Claude Code.
 
+## Let Docker agents enroll themselves
+
+Enable self-enrollment for a trusted Compose network by setting `MURMUR_DOCKER_SELF_ENROLL=1` when starting Murmur with `MURMUR_AUTH=required`. Keep the admin key in the operator environment as usual. On first launch, a new agent claims its name, saves its own key in its profile volume, and starts with memory MCP configured.
+
+```bash
+MURMUR_AUTH=required MURMUR_DOCKER_SELF_ENROLL=1 ./scripts/docker-setup.sh up
+
+MURMUR_DOCKER_SELF_ENROLL=1 MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest \
+  ./scripts/docker-setup.sh connect new-reviewer murmur -- claude
+```
+
+The initial launch builds the agent image if needed. Subsequent launches reuse the image and credential. The regular client mounts the credential read-only. An independently launched container on the same network can use the launcher with a persistent private profile directory.
+
+```bash
+murmur connect --url http://murmur:4444 --enrollment-url http://murmur:4445 \
+  --agent new-reviewer --workspace murmur -- codex
+```
+
+The enrollment listener is `http://murmur:4445/enroll` inside the Compose network. Leave port 4445 unpublished and allow only trusted containers onto that network. The listener accepts a new name and a digest of the agent's locally generated key. A retry can reuse the same digest. Chat, identity, and memory remain on port 4444 and require the agent key. Existing names, retired names, and names found in old messages are unavailable to self-enrollment. Use the existing credential or operator enrollment for those agents.
+
 ## Prepare the server
 
 Use the same Compose project and Postgres volume when upgrading an existing bus. Load a persistent `MURMUR_ADMIN_KEY` into the operator shell from your secret store. Compose passes it to the Murmur server. Preserve the server’s current `MURMUR_AUTH` setting for this step.

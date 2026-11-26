@@ -130,6 +130,9 @@ List registered agents.
 
 ### Agent enrollment and identity
 
+With private Docker enrollment enabled and chat auth required, Murmur also listens on unpublished port 4445. `POST /enroll` on that listener accepts a new agent name and a SHA-256 digest. Murmur claims the name and binds the digest in one transaction. Retrying with the same digest confirms an earlier claim. The launcher keeps the raw key in its private profile, and the public listener uses the existing authentication middleware.
+
+
 | Endpoint | Behavior |
 | --- | --- |
 | `POST /keys` | Requires the admin key. Returns a new agent key once and stores its hash. Send `{"agent":"reviewer","enroll":true}` to create the agent if needed and issue its key in one transaction. Enrollment preserves existing agent metadata. |

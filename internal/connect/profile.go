@@ -95,7 +95,7 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 	}
 
 	admin := os.Getenv("MURMUR_ADMIN_KEY")
-	if !allowEnroll || admin == "" {
+	if !allowEnroll || (admin == "" && o.enrollmentURL == "") {
 		return "", fmt.Errorf("no saved credential for %q; enroll from a trusted launcher or supply its MURMUR_KEY", o.agent)
 	}
 	unlock, err := prepareProfile(path)
@@ -109,6 +109,9 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
+	}
+	if o.enrollmentURL != "" {
+		return enrollOnDocker(ctx, c, o, path)
 	}
 	key, err = c.enroll(ctx, o.agent, admin)
 	if err != nil {

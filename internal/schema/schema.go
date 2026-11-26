@@ -79,6 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_agent ON api_keys (agent);
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS groups TEXT[] DEFAULT '{}';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS memory_lead BOOLEAN NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS retired_agent_names (name TEXT PRIMARY KEY);
 CREATE INDEX IF NOT EXISTS idx_messages_to ON messages ("to");
 `
 

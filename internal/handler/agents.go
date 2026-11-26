@@ -166,6 +166,12 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 
+	if _, err := tx.Exec(r.Context(), `INSERT INTO retired_agent_names (name) VALUES ($1) ON CONFLICT DO NOTHING`, name); err != nil {
+		log.Printf("reserve deleted agent name %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
 	if _, err := tx.Exec(r.Context(), `DELETE FROM api_keys WHERE agent = $1`, name); err != nil {
 		log.Printf("delete api_keys for agent %s: %v", name, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

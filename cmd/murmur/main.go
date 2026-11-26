@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -67,6 +69,10 @@ func run() error {
 	adminKey := getenv("MURMUR_ADMIN_KEY", "")
 	authMode := getenv("MURMUR_AUTH", "off")
 	messageTTL := getenv("MURMUR_MESSAGE_TTL", "")
+	privateEnroll := os.Getenv("MURMUR_DOCKER_SELF_ENROLL") == "1"
+	if privateEnroll && authMode != "required" {
+		return errors.New("MURMUR_DOCKER_SELF_ENROLL requires MURMUR_AUTH=required")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -145,6 +151,28 @@ func run() error {
 	srv := handler.AuthMiddleware(pool, authMode, adminKey, mux)
 	if authMode != "" && authMode != "off" {
 		log.Printf("auth mode: %s", authMode)
+	}
+
+	if privateEnroll {
+		// Bind the Compose service address, independently of the public listener.
+		listener, err := net.Listen("tcp", "murmur:4445")
+		if err != nil {
+			return fmt.Errorf("listen for private enrollment: %w", err)
+		}
+		privateServer := &http.Server{
+			Handler:           handler.PrivateEnrollment(pool),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      10 * time.Second,
+			IdleTimeout:       15 * time.Second,
+		}
+		defer privateServer.Close()
+		go func() {
+			if err := privateServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("private enrollment listener: %v", err)
+			}
+		}()
+		log.Printf("private enrollment ready on %s", listener.Addr())
 	}
 
 	handler.StartReaper(ctx, pool, messageTTL, reapMemory)

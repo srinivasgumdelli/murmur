@@ -98,6 +98,45 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		return out.Key
 	}
 
+	t.Run("private enrollment", func(t *testing.T) {
+		private := PrivateEnrollment(pool)
+		pair := func(name, key string) string {
+			return fmt.Sprintf(`{"agent":%q,"key_hash":%q}`, name, hashKey(key))
+		}
+		claim := func(name, key string, want int) {
+			t.Helper()
+			req := httptest.NewRequest(http.MethodPost, "/enroll", strings.NewReader(pair(name, key))).WithContext(ctx)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			private.ServeHTTP(rec, req)
+			if rec.Code != want {
+				t.Fatalf("claim %q returned %d, want %d: %s", name, rec.Code, want, rec.Body)
+			}
+			if rec.Code == http.StatusOK && rec.Body.String() != fmt.Sprintf("{\"agent\":%q}\n", name) {
+				t.Fatalf("unexpected claim response: %s", rec.Body)
+			}
+		}
+		const key = "new-agent-private-key"
+		claim("system", key, http.StatusBadRequest)
+		do(private, http.MethodGet, "/identity", key, "", http.StatusNotFound)
+		do(required, http.MethodPost, "/enroll", admin, pair("private-agent", key), http.StatusNotFound)
+		claim("private-agent", key, http.StatusOK)
+		claim("private-agent", key, http.StatusOK)
+		claim("private-agent", "different-key", http.StatusConflict)
+		claim("different-agent", key, http.StatusConflict)
+		do(required, http.MethodGet, "/identity", key, "", http.StatusOK)
+		issueKey(required, "reserved-legacy-key")
+		claim("reserved-legacy-key", "another-key", http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"unkeyed-agent","role":"worker"}`, http.StatusCreated)
+		claim("unkeyed-agent", "another-key", http.StatusConflict)
+		if _, err := pool.Exec(ctx, `INSERT INTO messages (sender, "to", message) VALUES ('system', 'prior-private-recipient', 'history')`); err != nil {
+			t.Fatal(err)
+		}
+		claim("prior-private-recipient", "another-key", http.StatusConflict)
+		do(required, http.MethodDelete, "/agents/private-agent", key, "", http.StatusOK)
+		claim("private-agent", key, http.StatusConflict)
+	})
+
 	enroll := func(name string) string {
 		t.Helper()
 		rec := request(off, "/keys", admin, fmt.Sprintf(`{"agent":%q,"enroll":true}`, name), http.StatusCreated)
