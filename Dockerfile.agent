@@ -1,0 +1,13 @@
+ARG MURMUR_IMAGE=murmur-murmur:latest
+ARG AGENT_IMAGE
+FROM ${MURMUR_IMAGE} AS murmur
+FROM ${AGENT_IMAGE}
+
+ARG AGENT_UID=1000
+ARG AGENT_GID=1000
+USER root
+COPY --from=murmur /murmur /usr/local/bin/murmur
+RUN mkdir -p /var/lib/murmur-agent \
+    && chown "${AGENT_UID}:${AGENT_GID}" /var/lib/murmur-agent \
+    && chmod 0700 /var/lib/murmur-agent
+USER ${AGENT_UID}:${AGENT_GID}

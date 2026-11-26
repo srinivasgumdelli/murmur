@@ -232,7 +232,7 @@ The memory API requires the server to run with `MURMUR_AUTH=required`. Use the a
 
 ### Start with an enrolled identity
 
-From a trusted host, launch with `murmur connect --agent NAME --workspace ID -- claude` or substitute `codex`. This configures MCP and exports the agent key before the client starts. Add `--claude-hooks` before `--` to load the built-in memory hooks for that Claude Code session. Use the exported `MURMUR_AGENT` for sends, acknowledgements, and polling. The admin key stays in the trusted launcher.
+For a containerized agent, use the image and read-only credential volume from “Connect a containerized agent” in the Murmur README. Run `murmur connect` inside the sandbox with the Murmur service address. For an agent running directly on a host, launch with `murmur connect --agent NAME --workspace ID -- claude` or substitute `codex`. The launcher configures MCP and exports the agent key before the client starts. Add `--claude-hooks` before `--` to load the built-in memory hooks for that Claude Code session. Use the exported `MURMUR_AGENT` for sends, acknowledgements, and polling. The admin key stays in the trusted launcher.
 
 For an existing Codex thread, run `murmur watch --agent NAME --codex-thread THREAD_ID` in the background, using the exact thread ID. The watcher uses the same saved credential and does not issue keys.
 
