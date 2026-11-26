@@ -12,7 +12,7 @@ curl -qfsSL --proto '=https' --proto-redir '=https' \
 bash murmur-install.sh
 ```
 
-The installer downloads the source into `${XDG_DATA_HOME:-$HOME/.local/share}/murmur/source`, generates an administrator key, and starts the Compose services with required authentication and memory. It prints the dashboard URL. The mode-0600 `install-state` file next to the source contains the Compose project name on the first line and the administrator key on the second line. Rerunning the installer from the same install directory reuses that project, key, and Postgres volumes. Set `MURMUR_INSTALL_DIR` to choose another location, `COMPOSE_PROJECT_NAME` to choose a different project, or `MURMUR_HOST_PORT` to publish on another port. `MURMUR_REF` selects the source revision when the installer downloads a new checkout. The installer refuses to take over an existing project. For those deployments, use the steps below.
+The installer downloads the source into `${XDG_DATA_HOME:-$HOME/.local/share}/murmur/source`, generates an administrator key, and starts the Compose services with required authentication and memory. It prints the dashboard URL. The mode-0600 `install-state` file next to the source contains the Compose project name on the first line and the administrator key on the second line. Rerunning the installer from the same install directory reuses that project, key, and Postgres volumes. Set `MURMUR_INSTALL_DIR` to choose another location, `COMPOSE_PROJECT_NAME` to choose a different project, or `MURMUR_HOST_PORT` to publish on another port. `MURMUR_REF` selects the source revision on the initial download. A rerun uses the local checkout. The installer refuses to take over an existing project. For those deployments, use the steps below.
 
 If you already have a Claude Code or Codex container image, you can enroll its agent during installation.
 
@@ -20,7 +20,15 @@ If you already have a Claude Code or Codex container image, you can enroll its a
 MURMUR_AGENT=reviewer MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest bash murmur-install.sh
 ```
 
-To launch an enrolled agent, run the installed `scripts/docker-setup.sh` by absolute path from the intended workspace. Set `COMPOSE_PROJECT_NAME` to the project printed by the installer. The launcher configures memory MCP when the client starts.
+To launch an enrolled agent, run the installed `scripts/docker-setup.sh` by absolute path from the intended workspace. It reads the Compose project name from the install's `.env` and configures memory MCP when the client starts.
+
+To enroll another agent later, export the administrator key from the private install state. The example uses the default install path.
+
+```bash
+install_dir="${XDG_DATA_HOME:-$HOME/.local/share}/murmur"
+export MURMUR_ADMIN_KEY="$(sed -n '2p' "$install_dir/install-state")"
+MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest "$install_dir/source/scripts/docker-setup.sh" enroll reviewer
+```
 
 ## Use the setup script
 

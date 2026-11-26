@@ -34,7 +34,7 @@ install_dir=${MURMUR_INSTALL_DIR:-"${XDG_DATA_HOME:-$HOME/.local/share}/murmur"}
 mkdir -p -- "$install_dir"
 install_dir=$(cd -- "$install_dir" && pwd -P)
 lock="$install_dir/.install-lock"
-mkdir -- "$lock" || fail "Another install may be in progress in $install_dir."
+mkdir -- "$lock" || fail "Another install may be in progress. If no installer is running, remove $lock and retry."
 trap 'rm -rf -- "$lock"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -75,6 +75,12 @@ if [[ ! -d $source_dir ]]; then
 fi
 [[ -x $source_dir/scripts/docker-setup.sh ]] || fail "Invalid Murmur checkout at $source_dir."
 
+if [[ ! -e $source_dir/.env ]]; then
+    # Keep the generated admin key outside the Docker build context.
+    printf 'COMPOSE_PROJECT_NAME=%s\nMURMUR_AUTH=required\n' "$project" > "$lock/compose.env"
+    mv -- "$lock/compose.env" "$source_dir/.env"
+fi
+
 if [[ ! -f $state ]]; then
     MURMUR_ADMIN_KEY=$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')
     [[ $MURMUR_ADMIN_KEY =~ ^[a-f0-9]{64}$ ]] || fail "Could not generate a Murmur administrator key."
@@ -93,4 +99,4 @@ unset COMPOSE_FILE COMPOSE_ENV_FILES
 )
 printf '\nMurmur source and setup helper are in %s\n' "$source_dir"
 printf 'Administrator credentials are stored in %s\n' "$state"
-printf 'Use COMPOSE_PROJECT_NAME=%s with the setup helper.\n' "$project"
+printf 'The setup helper uses Compose project %s.\n' "$project"
