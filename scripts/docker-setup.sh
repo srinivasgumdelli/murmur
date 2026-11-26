@@ -11,7 +11,7 @@ Usage:
 
 Set MURMUR_AUTH and export MURMUR_ADMIN_KEY before running up.
 Set MURMUR_AGENT_BASE_IMAGE to a local Claude Code or Codex image before enrolling.
-Set MURMUR_DOCKER_SELF_ENROLL=1 on up and connect for private Docker enrollment.
+Authenticated Compose deployments use private enrollment by default. Set MURMUR_DOCKER_SELF_ENROLL=0 to disable it.
 Set MURMUR_CODEX_THREAD_ID to send chat notifications to an existing Codex thread.
 See docs/agent-enrollment.md for configuration and auth cutover.
 USAGE
@@ -27,7 +27,6 @@ compose=(docker compose --project-directory "$root")
 profile_dir=/var/lib/murmur-agent
 state_dir=/var/lib/murmur-client
 bus_url=http://murmur:4444
-self_enroll=${MURMUR_DOCKER_SELF_ENROLL:-0}
 
 case ${1:-help} in
     help|-h|--help) usage; exit 0 ;;
@@ -35,9 +34,18 @@ case ${1:-help} in
     *) usage >&2; exit 1 ;;
 esac
 
-# Compose resolves explicit project names, .env, and the checkout directory.
-project=$("${compose[@]}" config | awk '/^name: / { print $2 }')
+# Read the effective project and enrollment setting, including .env overrides.
+settings=$("${compose[@]}" config | awk '
+    /^name: / { project = $2 }
+    $1 == "MURMUR_DOCKER_SELF_ENROLL:" { mode = $2; gsub(/[^a-z0-9]/, "", mode) }
+    END { print project, mode }
+')
+read -r project self_enroll <<< "$settings"
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
+case $self_enroll in
+    0|1|auto) ;;
+    *) fail "Set MURMUR_DOCKER_SELF_ENROLL to 0, 1, or auto." ;;
+esac
 compose+=(-p "$project")
 
 if [[ $action == up ]]; then
@@ -83,7 +91,7 @@ build_agent_image() {
 enroll_agent() {
     local enrollment=( "${run[@]}" )
     local credential=(enroll --url "$bus_url" --agent "$agent" --profile-dir "$profile_dir")
-    if [[ $self_enroll == 1 ]]; then
+    if [[ $1 == private ]]; then
         credential+=(--enrollment-url http://murmur:4445)
     else
         [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export MURMUR_ADMIN_KEY to enroll an agent."
@@ -98,7 +106,11 @@ enroll_agent() {
 if [[ $action == enroll ]]; then
     [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh enroll AGENT"
     build_agent_image
-    enroll_agent
+    if [[ -n ${MURMUR_ADMIN_KEY:-} || $self_enroll == 0 ]]; then
+        enroll_agent admin
+    else
+        enroll_agent private
+    fi
     exit
 fi
 
@@ -128,11 +140,11 @@ if [[ $action == connect ]]; then
         args+=(--task "$MURMUR_TASK")
     fi
     args+=(-- "$@")
-    if [[ $self_enroll == 1 ]]; then
+    if [[ $self_enroll != 0 ]]; then
         if ! docker image inspect "$agent_image" >/dev/null 2>&1; then
             build_agent_image >&2
         fi
-        enroll_agent >&2
+        enroll_agent private >&2
     fi
     run+=(-i --mount "type=bind,src=$workdir,dst=/workspace" --workdir /workspace)
     if [[ -t 0 && -t 1 ]]; then

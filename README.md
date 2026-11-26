@@ -91,7 +91,7 @@ Schema is applied automatically on startup.
 | `BUS_DATABASE_URL` | `postgres://murmur:murmur@localhost:5432/murmur?sslmode=disable` | Postgres connection string |
 | `MURMUR_ADMIN_KEY` | — | Admin key for key management and auth bypass |
 | `MURMUR_AUTH` | `off` | Auth mode: `off`, `optional` (logs warnings), `required` (blocks) |
-| `MURMUR_DOCKER_SELF_ENROLL` | `0` | Set to `1` with required auth to enable the unpublished Docker enrollment listener |
+| `MURMUR_DOCKER_SELF_ENROLL` | `auto` in Compose | Enables the unpublished listener with required auth. Set to `0` to disable |
 | `MURMUR_MESSAGE_TTL` | — | Message retention period (Postgres interval, e.g. `7 days`). Empty = keep forever |
 | `MURMUR_MEMORY_STORE` | `postgres` | Selects `postgres` or `sqlite` for memory |
 | `MURMUR_MEMORY_DB` | `./murmur-memory.db` | SQLite memory database file |
@@ -117,17 +117,14 @@ See the [fresh-install guide](docs/agent-enrollment.md#install-on-a-new-machine)
 
 ### Connect a containerized agent
 
-Use [scripts/docker-setup.sh](scripts/docker-setup.sh) to bring up Murmur and Postgres, enroll a Docker agent, and launch its client with memory MCP configured. Load a persistent `MURMUR_ADMIN_KEY` into your shell from your secret store first. The following example is for a new bus and an existing Claude Code image.
+Use [scripts/docker-setup.sh](scripts/docker-setup.sh) to bring up Murmur and Postgres and start an agent with memory MCP. Authenticated Compose deployments let new agents on the trusted Docker network enroll automatically. Load a persistent `MURMUR_ADMIN_KEY` into the operator shell before starting the server. This example uses an existing Claude Code image.
 
 ```bash
 MURMUR_AUTH=required ./scripts/docker-setup.sh up
-MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh enroll reviewer
-./scripts/docker-setup.sh connect reviewer murmur -- claude
+MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh connect reviewer murmur -- claude
 ```
 
-For an existing bus, use its current auth mode and Compose project when running `up`. See the [Docker enrollment guide](docs/agent-enrollment.md) for the auth cutover, Codex and watcher setup, and equivalent manual commands.
-
-On a trusted Docker network, enable `MURMUR_DOCKER_SELF_ENROLL=1` on `up` and `connect` to skip manual enrollment for a new name. The enrollment port stays unpublished. See the [self-enrollment example](docs/agent-enrollment.md#let-docker-agents-enroll-themselves).
+For an existing bus, use its current auth mode and Compose project. See the [Docker enrollment guide](docs/agent-enrollment.md) for the auth cutover, network addresses, existing agent names, and watcher setup.
 
 ### Connect a host agent
 

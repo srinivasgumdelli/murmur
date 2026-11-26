@@ -40,7 +40,7 @@ MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh enrol
 ./scripts/docker-setup.sh connect reviewer murmur -- claude
 ```
 
-The script checks server readiness and builds an image for each agent from your local Claude Code or Codex base at enrollment. The default tag uses the Compose project and the agent name, so Claude Code and Codex agents can share one bus. If you set `MURMUR_AGENT_IMAGE` to override the tag, use the same value to enroll, connect, and watch that agent. Set `AGENT_UID` and `AGENT_GID` if the image uses a different container user than 1000:1000. The launch command bind-mounts its current directory as the agent workspace. To launch from a different checkout, invoke the script by absolute path from that directory. It passes the exported `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` along with any corresponding `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. The agent's client configuration and login state persist in a separate Docker volume. Protect that volume like the credential volume. Run enrollment again after a server upgrade to refresh the launcher in the agent image.
+The script checks server readiness and builds an image for each agent from your local Claude Code or Codex base at enrollment. You can also use the automatic launch flow described below. The default tag uses the Compose project and the agent name, so Claude Code and Codex agents can share one bus. If you set `MURMUR_AGENT_IMAGE` to override the tag, use the same value to enroll, connect, and watch that agent. Set `AGENT_UID` and `AGENT_GID` if the image uses a different container user than 1000:1000. The launch command bind-mounts its current directory as the agent workspace. To launch from a different checkout, invoke the script by absolute path from that directory. It passes the exported `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` along with any corresponding `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. The agent's client configuration and login state persist in a separate Docker volume. Protect that volume like the credential volume. Run enrollment again after a server upgrade to refresh the launcher in the agent image.
 
 For Codex, enroll with your Codex base image and launch with `-- codex`. To receive chat notifications in an existing Codex thread, use an image whose Codex CLI supports `codex queue`, and use the thread ID from the same agent's persisted Codex state. Either run a standalone watcher or set `MURMUR_CODEX_THREAD_ID` when using `connect` with Codex to watch for the lifetime of the client.
 
@@ -50,25 +50,46 @@ MURMUR_CODEX_THREAD_ID="$thread_id" ./scripts/docker-setup.sh watch reviewer
 
 The watcher can also stream chat messages to stdout without a thread ID. The launcher configures memory MCP for Claude Code or Codex. Set `MURMUR_CLAUDE_HOOKS=1` on `connect` to enable the optional memory hooks for Claude Code.
 
-## Let Docker agents enroll themselves
+## Connect to a Docker service
 
-Enable self-enrollment for a trusted Compose network by setting `MURMUR_DOCKER_SELF_ENROLL=1` when starting Murmur with `MURMUR_AUTH=required`. Keep the admin key in the operator environment as usual. On first launch, a new agent claims its name, saves its own key in its profile volume, and starts with memory MCP configured.
+Deploy Murmur and Postgres using Compose with `MURMUR_AUTH=required`. The fresh-install script sets this mode automatically. Self-enrollment is enabled by default in this mode. The first launch can build the agent image, claim a new name, save the key in its profile volume, and start the agent with memory MCP configured.
 
 ```bash
-MURMUR_AUTH=required MURMUR_DOCKER_SELF_ENROLL=1 ./scripts/docker-setup.sh up
-
-MURMUR_DOCKER_SELF_ENROLL=1 MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest \
-  ./scripts/docker-setup.sh connect new-reviewer murmur -- claude
+MURMUR_AUTH=required ./scripts/docker-setup.sh up
+MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh connect new-reviewer murmur -- claude
 ```
 
-The initial launch builds the agent image if needed. Subsequent launches reuse the image and credential. The regular client mounts the credential read-only. An independently launched container on the same network can use the launcher with a persistent private profile directory.
+For agents launched by another stack on the same Docker daemon, join the Murmur Compose network as an external network. Use the deployed project's `<project>_default` network and the internal service address `http://murmur:4444`. Keep a persistent private profile volume for each agent. The launcher inside the agent container uses `http://murmur:4445/enroll` automatically for this service address.
 
 ```bash
-murmur connect --url http://murmur:4444 --enrollment-url http://murmur:4445 \
+murmur connect --url http://murmur:4444 --profile-dir /var/lib/murmur-agent \
   --agent new-reviewer --workspace murmur -- codex
 ```
 
-The enrollment listener is `http://murmur:4445/enroll` inside the Compose network. Leave port 4445 unpublished and allow only trusted containers onto that network. The listener accepts a new name and a digest of the agent's locally generated key. A retry can reuse the same digest. Chat, identity, and memory remain on port 4444 and require the agent key. Existing names, retired names, and names found in old messages are unavailable to self-enrollment. Use the existing credential or operator enrollment for those agents.
+An agent deployed with its own Compose file can attach to the bus network.
+
+```yaml
+services:
+  reviewer:
+    image: my-agent-image
+    entrypoint: ["/usr/local/bin/murmur"]
+    command: ["connect", "--url", "http://murmur:4444", "--profile-dir", "/var/lib/murmur-agent", "--agent", "new-reviewer", "--workspace", "murmur", "--", "codex"]
+    networks: [default, murmur_bus]
+    volumes:
+      - reviewer_profile:/var/lib/murmur-agent
+
+networks:
+  murmur_bus:
+    external: true
+    name: murmur_default
+
+volumes:
+  reviewer_profile:
+```
+
+Build `my-agent-image` with the agent Dockerfile below. Replace `murmur_default` with your service's deployed network name if you use a different Compose project.
+
+Only trusted containers should join the Compose network. Leave enrollment port 4445 unpublished. Clients outside that network use their own provisioned key and the configured bus URL for chat and memory MCP. Existing names, retired names, and names found in old messages require a saved key or operator enrollment. The admin key stays with the operator. Use `MURMUR_DOCKER_SELF_ENROLL=0` to disable the listener and automatic enrollment by the setup helper.
 
 ## Prepare the server
 

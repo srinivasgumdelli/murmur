@@ -115,11 +115,16 @@ func Run(ctx context.Context, args []string) error {
 		endpoint != "" && strings.TrimRight(endpoint, "/") != c.base+"/mcp" {
 		return errors.New("Murmur helper refused to provide a credential for a different MCP endpoint")
 	}
+	canEnroll := command == "connect" || command == "enroll"
+	if canEnroll && o.enrollmentURL == "" && os.Getenv("MURMUR_ADMIN_KEY") == "" &&
+		os.Getenv("MURMUR_DOCKER_SELF_ENROLL") != "0" && c.base == "http://murmur:4444" && inContainer() {
+		o.enrollmentURL = "http://murmur:4445"
+	}
 	var key string
 	if command == "enroll" && os.Getenv("MURMUR_KEY") != "" {
 		err = importCredential(ctx, c, o, os.Getenv("MURMUR_KEY"))
 	} else {
-		key, err = loadCredential(ctx, c, o, command == "connect" || command == "enroll")
+		key, err = loadCredential(ctx, c, o, canEnroll)
 	}
 	if err != nil {
 		return err
@@ -142,16 +147,18 @@ func defaultURL() string {
 	if configured := os.Getenv("MURMUR_URL"); configured != "" {
 		return configured
 	}
-	if os.Getenv("MOAT_SANDBOX") != "" || os.Getenv("DEVCONTAINER") != "" {
-		return ""
-	}
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		return ""
-	}
-	if _, err := os.Stat("/run/.containerenv"); err == nil {
+	if os.Getenv("MOAT_SANDBOX") != "" || os.Getenv("DEVCONTAINER") != "" || inContainer() {
 		return ""
 	}
 	return "http://localhost:4444"
+}
+
+func inContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	_, err := os.Stat("/run/.containerenv")
+	return err == nil
 }
 
 func clientName(program string) string {

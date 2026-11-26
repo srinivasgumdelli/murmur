@@ -69,7 +69,8 @@ func run() error {
 	adminKey := getenv("MURMUR_ADMIN_KEY", "")
 	authMode := getenv("MURMUR_AUTH", "off")
 	messageTTL := getenv("MURMUR_MESSAGE_TTL", "")
-	privateEnroll := os.Getenv("MURMUR_DOCKER_SELF_ENROLL") == "1"
+	enrollmentMode := os.Getenv("MURMUR_DOCKER_SELF_ENROLL")
+	privateEnroll := enrollmentMode == "1" || (enrollmentMode == "auto" && authMode == "required")
 	if privateEnroll && authMode != "required" {
 		return errors.New("MURMUR_DOCKER_SELF_ENROLL requires MURMUR_AUTH=required")
 	}
