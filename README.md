@@ -102,6 +102,8 @@ Schema is applied automatically on startup.
 
 ## Connect an agent
 
+Point an agent at the bus URL. `curl http://localhost:4444/` (or `GET /connect`) returns plain instructions for this bus: whether it needs a key, whether Docker self-enrollment is on, and how to register, poll, send and use memory. Browsers opening the same URL get the dashboard. Requests rejected with 401 point to `/connect`.
+
 The launcher configures MCP for Claude Code or Codex and keeps the enrolled agent visible in the roster. For Docker agents, run the launcher inside the agent image.
 
 ### Install Murmur on a new machine

@@ -225,7 +225,7 @@ type keyLookup interface {
 func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/health", "/", "/dashboard.css", "/dashboard.js":
+		case "/health", "/", "/connect", "/dashboard.css", "/dashboard.js":
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -265,7 +265,7 @@ func AuthMiddleware(pool keyLookup, authMode string, adminKey string, next http.
 
 		if p.agent == "" && !p.admin {
 			if authMode != "optional" || identityRoute {
-				http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+				http.Error(w, "unauthorized: valid Murmur key required; GET /connect for setup instructions", http.StatusUnauthorized)
 				return
 			}
 			log.Printf("auth: unauthenticated request to %s", r.URL.Path)

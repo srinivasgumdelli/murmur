@@ -90,7 +90,7 @@ func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 			return
 		}
 		if revoked {
-			http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+			http.Error(w, "unauthorized: valid Murmur key required; GET /connect for setup instructions", http.StatusUnauthorized)
 			return
 		}
 

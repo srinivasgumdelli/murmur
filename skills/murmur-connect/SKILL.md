@@ -213,6 +213,7 @@ you — a safety net so you never miss messages even without the long poll.
 
 | Action | Command |
 |--------|---------|
+| Instructions | `GET /connect` (or the bus URL with a non-HTML `Accept`) returns setup steps for this bus, no key needed |
 | Register | `POST /agents` with name, role, capabilities, groups |
 | Send | `POST /messages` with sender, message (returns inbox) |
 | Long poll | `GET /messages/poll?agent=NAME&after=LAST_ID&timeout=30` (`after=latest` starts at the tip; `after=0` replays full history) |
