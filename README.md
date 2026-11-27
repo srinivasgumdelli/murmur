@@ -92,7 +92,7 @@ Schema is applied automatically on startup.
 | `MURMUR_ADMIN_KEY` | — | Admin key for key management and auth bypass |
 | `MURMUR_AUTH` | `off` | Auth mode: `off`, `optional` (logs warnings), `required` (blocks) |
 | `MURMUR_DOCKER_SELF_ENROLL` | `auto` in Compose | Enables the unpublished listener with required auth. Set to `0` to disable |
-| `MURMUR_DOCKER_ENROLL_ADDR` | `murmur:4445` in Compose, unset otherwise | Bind address for the unpublished listener. Required to enable it outside Compose. Wildcard addresses such as `:4445` are refused |
+| `MURMUR_DOCKER_ENROLL_ADDR` | `murmur:4445` in Compose, unset otherwise | Bind address for the unpublished listener. Outside Compose, set it together with `MURMUR_DOCKER_SELF_ENROLL=1` (or `auto` with required auth). Wildcard addresses such as `:4445` are refused |
 | `MURMUR_MESSAGE_TTL` | — | Message retention period (Postgres interval, e.g. `7 days`). Empty = keep forever |
 | `MURMUR_MEMORY_STORE` | `postgres` | Selects `postgres` or `sqlite` for memory |
 | `MURMUR_MEMORY_DB` | `./murmur-memory.db` | SQLite memory database file |

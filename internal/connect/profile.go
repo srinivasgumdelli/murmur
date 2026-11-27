@@ -96,7 +96,11 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 	}
 
 	admin := os.Getenv("MURMUR_ADMIN_KEY")
-	if allowEnroll && admin == "" && o.enrollmentURL == "" && o.discoverEnrollment {
+	// A pending private claim is resumed even when an admin key is present:
+	// admin enrollment of that name would fail, because it is self-enrolled.
+	_, pendingErr := os.Stat(path + ".pending")
+	resumeClaim := pendingErr == nil
+	if allowEnroll && (admin == "" || resumeClaim) && o.enrollmentURL == "" && o.discoverEnrollment {
 		enrollmentURL, err := discoverPrivateEnrollment(ctx, c)
 		if err != nil {
 			return "", fmt.Errorf("check private enrollment availability: %w", err)

@@ -72,6 +72,13 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		if err := lockAgentName(r.Context(), tx, req.Name); err != nil {
 			return err
 		}
+		// A request queued behind a reclaim must not restore the claimant's
+		// metadata with a key that the reclaim just revoked.
+		if revoked, err := keyRevoked(r.Context(), tx, actor); err != nil {
+			return err
+		} else if revoked {
+			return errKeyRevoked
+		}
 		if actor.admin {
 			if err := checkSelfEnrolledVariant(r.Context(), tx, req.Name); err != nil {
 				return err
@@ -95,6 +102,10 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 			req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
 		).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	})
+	if errors.Is(err, errKeyRevoked) {
+		http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+		return
+	}
 	if errors.Is(err, errSelfEnrolledVariant) {
 		http.Error(w, "a self-enrolled agent already uses "+req.Name+" in another letter case; reclaim or delete that agent first", http.StatusConflict)
 		return
@@ -176,6 +187,23 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		return
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
+
+	// Take the per-name lock that reclaim holds, then recheck the caller's
+	// key, so a delete queued behind a reclaim cannot remove the operator's
+	// new key.
+	if err := lockAgentName(r.Context(), tx, name); err != nil {
+		log.Printf("lock agent %s for deletion: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if revoked, err := keyRevoked(r.Context(), tx, principalFromContext(r.Context())); err != nil {
+		log.Printf("recheck key for deletion of %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	} else if revoked {
+		http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+		return
+	}
 
 	// Lock the row before reading the grant or deleting keys. A concurrent
 	// role change and deletion must agree which one happened first.

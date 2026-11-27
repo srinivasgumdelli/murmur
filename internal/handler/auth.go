@@ -165,6 +165,8 @@ type principal struct {
 	keyHash string
 }
 
+var errKeyRevoked = errors.New("agent key was revoked")
+
 // keyRevoked reports whether the request's agent key no longer exists.
 // Admin and unauthenticated principals carry no key hash and never count as
 // revoked. A lookup error is returned separately, so callers can treat a

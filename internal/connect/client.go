@@ -38,11 +38,15 @@ func newClient(raw string) (*client, error) {
 }
 
 type statusError struct {
-	path string
-	code int
+	path    string
+	code    int
+	message string // first line of the server's error text, if any
 }
 
 func (e *statusError) Error() string {
+	if e.message != "" {
+		return fmt.Sprintf("Murmur %s returned HTTP %d: %s", e.path, e.code, e.message)
+	}
 	return fmt.Sprintf("Murmur %s returned HTTP %d", e.path, e.code)
 }
 
@@ -69,7 +73,9 @@ func (c *client) request(ctx context.Context, method, path, key string, body, ou
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &statusError{path: req.URL.Path, code: resp.StatusCode}
+		text, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		message, _, _ := strings.Cut(strings.TrimSpace(string(text)), "\n")
+		return &statusError{path: req.URL.Path, code: resp.StatusCode, message: message}
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(out)
 }
@@ -90,6 +96,9 @@ func (c *client) enroll(ctx context.Context, agent, adminKey string) (string, er
 		"agent": agent, "enroll": true,
 	}, &result)
 	var status *statusError
+	if errors.As(err, &status) && status.code == http.StatusConflict && strings.Contains(status.message, "letter case") {
+		return "", fmt.Errorf("enroll %s: %s", agent, status.message)
+	}
 	if errors.As(err, &status) && status.code == http.StatusConflict {
 		return "", fmt.Errorf("agent %q claimed its name through private enrollment. If that was your agent, use its saved profile. Otherwise revoke its keys with POST /keys {\"agent\":%q,\"enroll\":true,\"reclaim\":true}", agent, agent)
 	}

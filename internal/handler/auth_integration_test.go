@@ -189,6 +189,52 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 			_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE name = $1`, name)
 		}
 
+		// A claimant request queued behind a reclaim is refused once it runs.
+		for _, tc := range []struct{ method, path, body string }{
+			{http.MethodPost, "/agents", `{"name":"raced","role":"lead","description":"planted"}`},
+			{http.MethodDelete, "/agents/raced", ""},
+		} {
+			claim("raced", "raced-key", http.StatusOK)
+			held, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lockAgentName(ctx, held, "raced"); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan int, 1)
+			go func() {
+				req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)).WithContext(ctx)
+				req.Header.Set("Authorization", "Bearer raced-key")
+				rec := httptest.NewRecorder()
+				required.ServeHTTP(rec, req)
+				done <- rec.Code
+			}()
+			// Wait until the request is blocked on the advisory lock.
+			for waiting := false; !waiting; {
+				if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)`).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, err := held.Exec(ctx, `DELETE FROM api_keys WHERE agent = 'raced'`); err != nil {
+				t.Fatal(err)
+			}
+			if err := held.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if code := <-done; code != http.StatusUnauthorized {
+				t.Fatalf("%s %s after revocation returned %d, want 401", tc.method, tc.path, code)
+			}
+			var role string
+			if err := pool.QueryRow(ctx, `SELECT role FROM agents WHERE name = 'raced'`).Scan(&role); err != nil || role != "coding-agent" {
+				t.Fatalf("queued request changed the reclaimed agent: role %q (%v)", role, err)
+			}
+			if _, err := pool.Exec(ctx, `DELETE FROM agents WHERE name = 'raced'; DELETE FROM reserved_agent_names WHERE name = 'raced'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+
 		// Admin flows cannot create a look-alike next to a self-enrolled name.
 		claim("Lookalike", "lookalike-key", http.StatusOK)
 		request(required, "/keys", admin, `{"agent":"lookalike","enroll":true}`, http.StatusConflict)
