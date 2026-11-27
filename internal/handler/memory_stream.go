@@ -77,7 +77,9 @@ func MemoryStream(n *Notifier, authMode string, pool keyLookup, messages http.Ha
 			case <-r.Context().Done():
 				return
 			case event := <-sub.events:
-				if !keyStillValid(r.Context(), pool, p) {
+				// Memory events are not replayed, so a lookup error delivers
+				// the event to the stream that was authorized when it opened.
+				if revoked, err := keyRevoked(r.Context(), pool, p); err == nil && revoked {
 					return
 				}
 				data, _ := json.Marshal(event)
@@ -86,7 +88,7 @@ func MemoryStream(n *Notifier, authMode string, pool keyLookup, messages http.Ha
 				}
 				flusher.Flush()
 			case <-heartbeat.C:
-				if !keyStillValid(r.Context(), pool, p) {
+				if revoked, err := keyRevoked(r.Context(), pool, p); err == nil && revoked {
 					return
 				}
 				if _, err := fmt.Fprint(w, "event: heartbeat\ndata: {}\n\n"); err != nil {

@@ -193,13 +193,17 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		const squatter = "squatter-key"
 		claim("contested", squatter, http.StatusOK)
 		squatterPrincipal := principal{agent: "contested", keyHash: hashKey(squatter)}
-		if !keyStillValid(ctx, pool, squatterPrincipal) {
-			t.Fatal("fresh claim key reported invalid")
+		if revoked, err := keyRevoked(ctx, pool, squatterPrincipal); err != nil || revoked {
+			t.Fatalf("fresh claim key reported revoked (%v)", err)
 		}
 		request(required, "/keys", admin, `{"agent":"contested","enroll":true}`, http.StatusConflict)
 		request(required, "/keys", admin, `{"agent":"contested"}`, http.StatusConflict)
 		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusConflict)
-		request(required, "/agents", admin, `{"name":"contested","role":"worker"}`, http.StatusCreated)
+		request(required, "/agents", admin, `{"name":"contested","role":"worker"}`, http.StatusConflict)
+		roster := do(required, http.MethodGet, "/agents", admin, "", http.StatusOK)
+		if !strings.Contains(roster.Body.String(), `"name":"contested"`) || !strings.Contains(roster.Body.String(), `"self_enrolled":true`) {
+			t.Fatalf("admin roster does not flag the self-enrolled agent: %s", roster.Body)
+		}
 		do(required, http.MethodGet, "/identity", squatter, "", http.StatusOK)
 		reclaimed := request(required, "/keys", admin, `{"agent":"contested","enroll":true,"reclaim":true}`, http.StatusCreated)
 		var out struct {
@@ -210,8 +214,8 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		}
 		do(required, http.MethodGet, "/identity", squatter, "", http.StatusUnauthorized)
 		// Open streams recheck the key, so the claimant's stream ends too.
-		if keyStillValid(ctx, pool, squatterPrincipal) {
-			t.Fatal("reclaimed key still valid for open streams")
+		if revoked, err := keyRevoked(ctx, pool, squatterPrincipal); err != nil || !revoked {
+			t.Fatalf("reclaimed key not revoked for open streams (%v)", err)
 		}
 		var role string
 		if err := pool.QueryRow(ctx, `SELECT role FROM agents WHERE name = 'contested'`).Scan(&role); err != nil || role != "coding-agent" {

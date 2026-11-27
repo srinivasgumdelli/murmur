@@ -29,4 +29,7 @@ type Agent struct {
 	LastSeen     time.Time `json:"last_seen"`
 	MemoryLead   bool      `json:"memory_lead,omitempty"`
 	KeyEnrolled  *bool     `json:"key_enrolled,omitempty"`
+	// SelfEnrolled is shown to admins: the name was claimed on the private
+	// enrollment listener and no admin has confirmed or reclaimed it.
+	SelfEnrolled *bool `json:"self_enrolled,omitempty"`
 }

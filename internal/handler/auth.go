@@ -158,18 +158,19 @@ type principal struct {
 	keyHash string
 }
 
-// keyStillValid reports whether the request's agent key still exists.
-// Admin and unauthenticated principals carry no key hash and always pass.
-func keyStillValid(ctx context.Context, pool keyLookup, p principal) bool {
+// keyRevoked reports whether the request's agent key no longer exists.
+// Admin and unauthenticated principals carry no key hash and never count as
+// revoked. A lookup error is returned separately, so callers can treat a
+// transient database failure as an error rather than as a logout.
+func keyRevoked(ctx context.Context, pool keyLookup, p principal) (bool, error) {
 	if p.keyHash == "" || pool == nil {
-		return true
+		return false, nil
 	}
 	var valid bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM api_keys WHERE key_hash = $1)`, p.keyHash).Scan(&valid); err != nil {
-		log.Printf("auth: recheck key: %v", err)
-		return false
+		return false, err
 	}
-	return valid
+	return !valid, nil
 }
 
 type principalKey struct{}

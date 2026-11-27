@@ -18,8 +18,8 @@ type registerAgentRequest struct {
 	Description  *string  `json:"description"`
 	Capabilities []string `json:"capabilities"`
 	Groups       []string `json:"groups"`
-	// ConfirmSelfEnrolled lets an admin promote a self-enrolled agent to lead
-	// after checking who holds its key. It clears the self-enrolled mark.
+	// ConfirmSelfEnrolled lets an admin register or promote a self-enrolled
+	// agent after checking who holds its key. It clears the self-enrolled mark.
 	ConfirmSelfEnrolled bool `json:"confirm_self_enrolled,omitempty"`
 }
 
@@ -82,17 +82,19 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		 description = CASE WHEN $6 OR NOT agents.memory_lead THEN $3 ELSE agents.description END,
 		 capabilities = CASE WHEN $6 OR NOT agents.memory_lead THEN $4 ELSE agents.capabilities END,
 		 groups = CASE WHEN $6 OR NOT agents.memory_lead THEN $5 ELSE agents.groups END,
-		 self_enrolled = CASE WHEN $6 AND $2 = 'lead' AND $8 THEN false ELSE agents.self_enrolled END,
+		 self_enrolled = CASE WHEN $6 AND $8 THEN false ELSE agents.self_enrolled END,
 		 status = 'online', last_seen = now()
 		 WHERE ($6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2))
-		   AND NOT ($6 AND $2 = 'lead' AND agents.self_enrolled AND NOT $8)
+		   AND NOT ($6 AND agents.self_enrolled AND NOT $8)
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
 			req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
 		).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	})
-	if errors.Is(err, pgx.ErrNoRows) && actor.admin && req.Role == "lead" {
-		// The lead guard is the only way an admin upsert matches no row.
-		http.Error(w, "agent "+req.Name+" claimed its name through private enrollment; check who holds its key, then send confirm_self_enrolled:true to make it a lead, or reclaim it with POST /keys", http.StatusConflict)
+	if errors.Is(err, pgx.ErrNoRows) && actor.admin {
+		// The self-enrolled guard is the only way an admin upsert matches no
+		// row. Registering over a claim would otherwise look like reserving
+		// the name while the claimant keeps its key.
+		http.Error(w, "agent "+req.Name+" claimed its name through private enrollment; check who holds its key, then send confirm_self_enrolled:true, or reclaim it with POST /keys", http.StatusConflict)
 		return
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -121,7 +123,8 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(),
 		`SELECT name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead,
-		    CASE WHEN $1 THEN EXISTS (SELECT 1 FROM api_keys WHERE agent = agents.name) END
+		    CASE WHEN $1 THEN EXISTS (SELECT 1 FROM api_keys WHERE agent = agents.name) END,
+		    CASE WHEN $1 THEN self_enrolled END
 		 FROM agents ORDER BY last_seen DESC`, principalFromContext(r.Context()).admin)
 	if err != nil {
 		log.Printf("query agents: %v", err)
@@ -133,7 +136,7 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var agents []model.Agent
 	for rows.Next() {
 		var a model.Agent
-		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen, &a.MemoryLead, &a.KeyEnrolled); err != nil {
+		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen, &a.MemoryLead, &a.KeyEnrolled, &a.SelfEnrolled); err != nil {
 			log.Printf("scan agent: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return

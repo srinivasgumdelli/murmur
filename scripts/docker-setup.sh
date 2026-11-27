@@ -43,7 +43,9 @@ settings=$("${compose[@]}" config | awk '
 read -r project self_enroll <<< "$settings"
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
 case $self_enroll in
-    "") self_enroll=auto ;; # the server treats an unset value as auto too
+    # Compose files without the setting leave the server's listener off; the
+    # /health probe below decides whether private enrollment is usable.
+    "") self_enroll=auto ;;
     0|1|auto) ;;
     *) fail "Invalid MURMUR_DOCKER_SELF_ENROLL value '$self_enroll'. Use 0, 1, or auto." ;;
 esac
@@ -134,7 +136,11 @@ enroll_agent() {
 
 if [[ $action == enroll ]]; then
     [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh enroll AGENT"
-    build_agent_image
+    # Rebuild when a base image is given; otherwise reuse the agent's image,
+    # so rerunning enroll after an interrupted claim needs no extra settings.
+    if [[ -n ${MURMUR_AGENT_BASE_IMAGE:-} ]] || ! docker image inspect "$agent_image" >/dev/null 2>&1; then
+        build_agent_image
+    fi
     if [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
         enroll_agent admin
     elif private_enrollment_available; then
@@ -198,9 +204,10 @@ fi
 
 docker volume inspect "$profile_volume" >/dev/null 2>&1 ||
     fail "No credential volume for $agent in project $project. Run enroll first."
-# A volume left by an interrupted enrollment holds no key yet, only the
-# pending claim. connect mounts it read-only and fails; run enroll AGENT
-# again to resume the same claim.
+# A volume left by a failed enrollment holds no key yet. connect mounts it
+# read-only and fails. After an interrupted claim, run enroll AGENT again to
+# resume it. If the name was taken (409), pick another name, or have an
+# administrator reclaim it.
 exec "${run[@]}" \
     --mount "type=volume,src=$profile_volume,dst=$profile_dir,readonly" \
     --mount "type=volume,src=$state_volume,dst=$state_dir" \
