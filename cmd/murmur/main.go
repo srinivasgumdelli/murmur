@@ -194,7 +194,21 @@ func run() error {
 	mux.HandleFunc("/health", handler.Health(pool, startTime, memoryCheck, func() int { return int(enrollmentPort.Load()) }))
 	handler.InstallMemoryRoutes(mux, memoryService, authMode)
 	mux.Handle("/mcp", handler.MemoryMCP(memoryService, authMode))
-	mux.HandleFunc("/", ui.Handler())
+	// The bus URL itself is the onboarding entry point: agents and curl get
+	// connection instructions, browsers get the dashboard.
+	connectInfo := handler.ConnectInfo(authMode, func() int { return int(enrollmentPort.Load()) })
+	dashboard := ui.Handler()
+	mux.HandleFunc("/connect", connectInfo)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Header().Set("Vary", "Accept")
+			if !handler.PrefersHTML(r) {
+				connectInfo(w, r)
+				return
+			}
+		}
+		dashboard(w, r)
+	})
 
 	srv := handler.AuthMiddleware(pool, authMode, adminKey, mux)
 	if authMode != "" && authMode != "off" {

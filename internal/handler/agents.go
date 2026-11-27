@@ -103,7 +103,7 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	})
 	if errors.Is(err, errKeyRevoked) {
-		http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+		http.Error(w, "unauthorized: valid Murmur key required; GET /connect for setup instructions", http.StatusUnauthorized)
 		return
 	}
 	if errors.Is(err, errSelfEnrolledVariant) {
@@ -201,7 +201,7 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	} else if revoked {
-		http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+		http.Error(w, "unauthorized: valid Murmur key required; GET /connect for setup instructions", http.StatusUnauthorized)
 		return
 	}
 
