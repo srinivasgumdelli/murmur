@@ -97,7 +97,8 @@ func enrollOnDocker(ctx context.Context, bus *client, o options, path string) (s
 		if errors.As(err, &status) && status.code == http.StatusConflict {
 			return "", fmt.Errorf("agent name %q is already reserved; use its saved profile or ask an administrator to enroll it", o.agent)
 		}
-		if status == nil {
+		var netErr net.Error
+		if status == nil && errors.As(err, &netErr) && ctx.Err() == nil {
 			return "", fmt.Errorf("the bus advertises private enrollment at %s, but it is unreachable from here; join the Murmur Compose network or supply MURMUR_KEY: %w", enrollment.base, err)
 		}
 		return "", fmt.Errorf("private Docker enrollment: %w", err)
