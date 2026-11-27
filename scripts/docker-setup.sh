@@ -35,12 +35,13 @@ case ${1:-help} in
 esac
 
 # Read the effective project and enrollment setting, including .env overrides.
+# A "|" separator keeps an empty project from shifting the mode into it.
 settings=$("${compose[@]}" config | awk '
     /^name: / { project = $2 }
     $1 == "MURMUR_DOCKER_SELF_ENROLL:" { mode = $2; sub(/^"/, "", mode); sub(/"$/, "", mode) }
-    END { print project, mode }
+    END { print project "|" mode }
 ')
-read -r project self_enroll <<< "$settings"
+IFS='|' read -r project self_enroll <<< "$settings"
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
 case $self_enroll in
     # Compose files without the setting leave the server's listener off; the
@@ -206,8 +207,8 @@ docker volume inspect "$profile_volume" >/dev/null 2>&1 ||
     fail "No credential volume for $agent in project $project. Run enroll first."
 # A volume left by a failed enrollment holds no key yet. connect mounts it
 # read-only and fails. After an interrupted claim, run enroll AGENT again to
-# resume it. If the name was taken (409), pick another name, or have an
-# administrator reclaim it.
+# resume it. If the name was taken (409), the launcher drops the pending
+# claim: pick another name, or enroll it again with MURMUR_ADMIN_KEY set.
 exec "${run[@]}" \
     --mount "type=volume,src=$profile_volume,dst=$profile_dir,readonly" \
     --mount "type=volume,src=$state_volume,dst=$state_dir" \

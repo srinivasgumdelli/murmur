@@ -58,6 +58,8 @@ func discoverPrivateEnrollment(ctx context.Context, c *client) (string, error) {
 	return "http://" + net.JoinHostPort(bus.Hostname(), strconv.Itoa(port)), nil
 }
 
+var errClaimRejected = errors.New("private enrollment refused the claim")
+
 func enrollOnDocker(ctx context.Context, bus *client, o options, path string) (string, error) {
 	enrollment, err := newClient(o.enrollmentURL)
 	if err != nil {
@@ -95,7 +97,11 @@ func enrollOnDocker(ctx context.Context, bus *client, o options, path string) (s
 	}, &answer); err != nil {
 		var status *statusError
 		if errors.As(err, &status) && status.code == http.StatusConflict {
-			return "", fmt.Errorf("agent name %q is already reserved; use its saved profile or ask an administrator to enroll it", o.agent)
+			// A 409 is final: a lost response to a claim that succeeded
+			// comes back 200 on retry. Drop the pending key so a later
+			// admin enrollment of this profile is not blocked by it.
+			_ = os.Remove(pending)
+			return "", fmt.Errorf("%w: agent name %q is already reserved; use its saved profile or ask an administrator to enroll it", errClaimRejected, o.agent)
 		}
 		var netErr net.Error
 		if status == nil && errors.As(err, &netErr) && ctx.Err() == nil {

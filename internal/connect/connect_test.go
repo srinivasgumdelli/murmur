@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -322,5 +323,58 @@ func TestDiscoverPrivateEnrollmentUsesBusHostAndDegradedHealth(t *testing.T) {
 				t.Fatalf("discoverPrivateEnrollment = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestRefusedPrivateClaimFallsBackToAdminEnrollment(t *testing.T) {
+	enroll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "agent name or credential already reserved", http.StatusConflict)
+	}))
+	defer enroll.Close()
+	enrollPort := enroll.Listener.Addr().(*net.TCPAddr).Port
+	var keyCalls atomic.Int32
+	bus := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprintf(w, `{"status":"ok","private_enrollment":true,"private_enrollment_port":%d}`, enrollPort)
+		case "/identity":
+			if r.Header.Get("X-Murmur-Key") == "admin-key" {
+				_, _ = io.WriteString(w, `{"admin":true}`)
+			} else {
+				_, _ = io.WriteString(w, `{"agent":"ops"}`)
+			}
+		case "/keys":
+			keyCalls.Add(1)
+			_, _ = io.WriteString(w, `{"agent":"ops","key":"issued-key"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer bus.Close()
+	c, err := newClient(bus.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "profile")
+	o := options{agent: "ops", dir: dir, discoverEnrollment: true}
+	t.Setenv("MURMUR_KEY", "")
+
+	t.Setenv("MURMUR_ADMIN_KEY", "")
+	if _, err := loadCredential(context.Background(), c, o, true); err == nil {
+		t.Fatal("refused claim without an admin key succeeded")
+	}
+	path, err := profilePath(dir, c.base, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending claim kept after 409: %v", err)
+	}
+
+	t.Setenv("MURMUR_ADMIN_KEY", "admin-key")
+	key, err := loadCredential(context.Background(), c, o, true)
+	if err != nil || key != "issued-key" || keyCalls.Load() != 1 {
+		t.Fatalf("admin fallback = (%q, %v) with %d /keys calls", key, err, keyCalls.Load())
 	}
 }

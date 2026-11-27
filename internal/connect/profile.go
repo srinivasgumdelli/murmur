@@ -128,7 +128,12 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 		return "", err
 	}
 	if o.enrollmentURL != "" {
-		return enrollOnDocker(ctx, c, o, path)
+		key, err := enrollOnDocker(ctx, c, o, path)
+		// With an admin key, a refused private claim falls back to operator
+		// enrollment, which reports any self-enrolled conflict itself.
+		if !errors.Is(err, errClaimRejected) || admin == "" {
+			return key, err
+		}
 	}
 	key, err = c.enroll(ctx, o.agent, admin)
 	if err != nil {
