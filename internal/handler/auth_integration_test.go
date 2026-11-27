@@ -189,6 +189,12 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 			_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE name = $1`, name)
 		}
 
+		// Admin flows cannot create a look-alike next to a self-enrolled name.
+		claim("Lookalike", "lookalike-key", http.StatusOK)
+		request(required, "/keys", admin, `{"agent":"lookalike","enroll":true}`, http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"LOOKALIKE","role":"lead"}`, http.StatusConflict)
+		do(required, http.MethodDelete, "/agents/Lookalike", admin, "", http.StatusOK)
+
 		// Admin key issuance and lead promotion never silently adopt a claim.
 		const squatter = "squatter-key"
 		claim("contested", squatter, http.StatusOK)

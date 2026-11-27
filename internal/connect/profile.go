@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 func profilePath(dir, base, agent string) (string, error) {
@@ -106,6 +107,11 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 		return "", fmt.Errorf("no saved credential for %q; enroll from a trusted launcher or supply its MURMUR_KEY", o.agent)
 	}
 	unlock, err := prepareProfile(path)
+	if errors.Is(err, syscall.EROFS) {
+		// connect mounts the profile read-only. An earlier enrollment that
+		// failed leaves an empty profile volume behind.
+		return "", fmt.Errorf("no saved credential for %q and its profile is read-only; finish enrollment with `scripts/docker-setup.sh enroll %s`, or supply its MURMUR_KEY", o.agent, o.agent)
+	}
 	if err != nil {
 		return "", err
 	}

@@ -85,6 +85,10 @@ func Keys(pool *pgxpool.Pool, adminKey string) http.HandlerFunc {
 		}
 
 		err = issueKey(r.Context(), pool, req, hashKey(key))
+		if errors.Is(err, errSelfEnrolledVariant) {
+			http.Error(w, "a self-enrolled agent already uses "+req.Agent+" in another letter case; reclaim or delete that agent first", http.StatusConflict)
+			return
+		}
 		if errors.Is(err, errSelfEnrolled) {
 			http.Error(w, "agent "+req.Agent+" claimed its name through private enrollment; send reclaim:true to revoke its keys and issue a new one", http.StatusConflict)
 			return
@@ -106,6 +110,9 @@ func issueKey(ctx context.Context, pool *pgxpool.Pool, req createKeyRequest, key
 		// Wait for any in-flight private claim of this name to commit, so the
 		// self-enrolled check below sees it.
 		if err := lockAgentName(ctx, tx, req.Agent); err != nil {
+			return err
+		}
+		if err := checkSelfEnrolledVariant(ctx, tx, req.Agent); err != nil {
 			return err
 		}
 		if req.Enroll {

@@ -72,6 +72,11 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		if err := lockAgentName(r.Context(), tx, req.Name); err != nil {
 			return err
 		}
+		if actor.admin {
+			if err := checkSelfEnrolledVariant(r.Context(), tx, req.Name); err != nil {
+				return err
+			}
+		}
 		return tx.QueryRow(r.Context(),
 			`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
 		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
@@ -90,6 +95,10 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 			req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
 		).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
 	})
+	if errors.Is(err, errSelfEnrolledVariant) {
+		http.Error(w, "a self-enrolled agent already uses "+req.Name+" in another letter case; reclaim or delete that agent first", http.StatusConflict)
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) && actor.admin {
 		// The self-enrolled guard is the only way an admin upsert matches no
 		// row. Registering over a claim would otherwise look like reserving

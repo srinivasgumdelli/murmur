@@ -57,8 +57,11 @@ func (l *claimLimiter) allow(source string) bool {
 	// Bound memory: drop sources with no recent claims once the map grows.
 	if len(l.sources) > 1024 {
 		for key, times := range l.sources {
-			if len(recent(times)) == 0 {
+			// recent filters in place, so store the result back.
+			if kept := recent(times); len(kept) == 0 {
 				delete(l.sources, key)
+			} else {
+				l.sources[key] = kept
 			}
 		}
 	}
@@ -132,6 +135,23 @@ func privateEnrollment(pool *pgxpool.Pool, limiter *claimLimiter) http.Handler {
 func lockAgentName(ctx context.Context, tx pgx.Tx, agent string) error {
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('murmur-agent:' || lower($1)))`, agent)
 	return err
+}
+
+var errSelfEnrolledVariant = errors.New("a self-enrolled agent already uses this name in another letter case")
+
+// checkSelfEnrolledVariant refuses an admin name that differs only in letter
+// case from a self-enrolled agent, so a claim cannot sit next to the
+// operator's identity as a look-alike. Call it under lockAgentName.
+func checkSelfEnrolledVariant(ctx context.Context, tx pgx.Tx, agent string) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM agents
+		WHERE lower(name) = lower($1) AND name <> $1 AND self_enrolled)`, agent).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return errSelfEnrolledVariant
+	}
+	return nil
 }
 
 func claimAgent(ctx context.Context, pool *pgxpool.Pool, agent, keyHash string) error {
