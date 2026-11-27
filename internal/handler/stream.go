@@ -44,6 +44,7 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			return
 		}
 		viewer := AgentFromContext(r.Context())
+		caller := principalFromContext(r.Context())
 		deliveryAgent := viewer
 		if deliveryAgent == "" {
 			deliveryAgent = agent
@@ -93,6 +94,10 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case <-heartbeat.C:
+				// Skip the check on a lookup error; the next heartbeat retries.
+				if revoked, err := keyRevoked(r.Context(), pool, caller); err == nil && revoked {
+					return
+				}
 				_, _ = fmt.Fprintf(w, "event: heartbeat\ndata: {}\n\n")
 				flusher.Flush()
 			case result := <-notifCh:
@@ -132,6 +137,18 @@ func Stream(pool *pgxpool.Pool) http.HandlerFunc {
 					}
 				}
 
+				// A reclaim or delete revokes the key; stop before marking
+				// anything delivered to its former holder. On a lookup error,
+				// leave the message unsent so a later poll or stream gets it.
+				revoked, err := keyRevoked(r.Context(), pool, caller)
+				if err != nil {
+					log.Printf("stream: recheck key: %v", err)
+					waitNext()
+					continue
+				}
+				if revoked {
+					return
+				}
 				var msg model.Message
 				err = pool.QueryRow(r.Context(),
 					`UPDATE messages SET status = CASE

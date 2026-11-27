@@ -33,13 +33,15 @@ const usage = `Usage:
 var scopeID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._@:/-]{0,127}$`)
 
 type options struct {
-	url       string
-	agent     string
-	workspace string
-	task      string
-	dir       string
-	thread    string
-	hooks     bool
+	url                string
+	enrollmentURL      string
+	discoverEnrollment bool
+	agent              string
+	workspace          string
+	task               string
+	dir                string
+	thread             string
+	hooks              bool
 }
 
 func Run(ctx context.Context, args []string) error {
@@ -62,6 +64,9 @@ func Run(ctx context.Context, args []string) error {
 	flags.StringVar(&o.url, "url", defaultURL(), "Murmur base URL")
 	flags.StringVar(&o.agent, "agent", os.Getenv("MURMUR_AGENT"), "registered agent name")
 	flags.StringVar(&o.dir, "profile-dir", os.Getenv("MURMUR_PROFILE_DIR"), "private credential directory")
+	if command == "connect" || command == "enroll" {
+		flags.StringVar(&o.enrollmentURL, "enrollment-url", "", "private Docker enrollment URL")
+	}
 	if command == "connect" {
 		flags.StringVar(&o.workspace, "workspace", os.Getenv("MURMUR_WORKSPACE"), "memory workspace ID")
 		flags.StringVar(&o.task, "task", os.Getenv("MURMUR_TASK"), "optional memory task ID")
@@ -111,11 +116,13 @@ func Run(ctx context.Context, args []string) error {
 		endpoint != "" && strings.TrimRight(endpoint, "/") != c.base+"/mcp" {
 		return errors.New("Murmur helper refused to provide a credential for a different MCP endpoint")
 	}
+	canEnroll := command == "connect" || command == "enroll"
+	o.discoverEnrollment = canEnroll && os.Getenv("MURMUR_DOCKER_SELF_ENROLL") != "0" && inContainer()
 	var key string
 	if command == "enroll" && os.Getenv("MURMUR_KEY") != "" {
 		err = importCredential(ctx, c, o, os.Getenv("MURMUR_KEY"))
 	} else {
-		key, err = loadCredential(ctx, c, o, command == "connect" || command == "enroll")
+		key, err = loadCredential(ctx, c, o, canEnroll)
 	}
 	if err != nil {
 		return err
@@ -138,16 +145,18 @@ func defaultURL() string {
 	if configured := os.Getenv("MURMUR_URL"); configured != "" {
 		return configured
 	}
-	if os.Getenv("MOAT_SANDBOX") != "" || os.Getenv("DEVCONTAINER") != "" {
-		return ""
-	}
-	if _, err := os.Stat("/.dockerenv"); err == nil {
-		return ""
-	}
-	if _, err := os.Stat("/run/.containerenv"); err == nil {
+	if os.Getenv("MOAT_SANDBOX") != "" || os.Getenv("DEVCONTAINER") != "" || inContainer() {
 		return ""
 	}
 	return "http://localhost:4444"
+}
+
+func inContainer() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	_, err := os.Stat("/run/.containerenv")
+	return err == nil
 }
 
 func clientName(program string) string {

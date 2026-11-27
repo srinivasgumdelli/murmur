@@ -18,6 +18,9 @@ type registerAgentRequest struct {
 	Description  *string  `json:"description"`
 	Capabilities []string `json:"capabilities"`
 	Groups       []string `json:"groups"`
+	// ConfirmSelfEnrolled lets an admin register or promote a self-enrolled
+	// agent after checking who holds its key. It clears the self-enrolled mark.
+	ConfirmSelfEnrolled bool `json:"confirm_self_enrolled,omitempty"`
 }
 
 func Agents(pool *pgxpool.Pool) http.HandlerFunc {
@@ -63,8 +66,26 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	}
 
 	var a model.Agent
-	err := pool.QueryRow(r.Context(),
-		`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
+	// Hold the per-name lock that private claims take, so a claim for a
+	// case variant cannot commit alongside this registration.
+	err := pgx.BeginFunc(r.Context(), pool, func(tx pgx.Tx) error {
+		if err := lockAgentName(r.Context(), tx, req.Name); err != nil {
+			return err
+		}
+		// A request queued behind a reclaim must not restore the claimant's
+		// metadata with a key that the reclaim just revoked.
+		if revoked, err := keyRevoked(r.Context(), tx, actor); err != nil {
+			return err
+		} else if revoked {
+			return errKeyRevoked
+		}
+		if actor.admin {
+			if err := checkSelfEnrolledVariant(r.Context(), tx, req.Name); err != nil {
+				return err
+			}
+		}
+		return tx.QueryRow(r.Context(),
+			`INSERT INTO agents (name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead)
 		 VALUES ($1, gen_random_uuid()::text, $2, $3, $4, $5, 'online', now(), $6 AND $2 = 'lead')
 		 ON CONFLICT (name) DO UPDATE SET
 		 session_id = CASE WHEN $6 OR NOT agents.memory_lead THEN gen_random_uuid()::text ELSE agents.session_id END,
@@ -73,11 +94,29 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 		 description = CASE WHEN $6 OR NOT agents.memory_lead THEN $3 ELSE agents.description END,
 		 capabilities = CASE WHEN $6 OR NOT agents.memory_lead THEN $4 ELSE agents.capabilities END,
 		 groups = CASE WHEN $6 OR NOT agents.memory_lead THEN $5 ELSE agents.groups END,
+		 self_enrolled = CASE WHEN $6 AND $8 THEN false ELSE agents.self_enrolled END,
 		 status = 'online', last_seen = now()
-		 WHERE $6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2)
+		 WHERE ($6 OR NOT agents.memory_lead OR ($7 AND agents.role = $2))
+		   AND NOT ($6 AND agents.self_enrolled AND NOT $8)
 		 RETURNING name, session_id, role, description, capabilities, groups, status, last_seen`,
-		req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name,
-	).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+			req.Name, req.Role, req.Description, req.Capabilities, req.Groups, actor.admin, actor.agent == req.Name, req.ConfirmSelfEnrolled,
+		).Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen)
+	})
+	if errors.Is(err, errKeyRevoked) {
+		http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+		return
+	}
+	if errors.Is(err, errSelfEnrolledVariant) {
+		http.Error(w, "a self-enrolled agent already uses "+req.Name+" in another letter case; reclaim or delete that agent first", http.StatusConflict)
+		return
+	}
+	if errors.Is(err, pgx.ErrNoRows) && actor.admin {
+		// The self-enrolled guard is the only way an admin upsert matches no
+		// row. Registering over a claim would otherwise look like reserving
+		// the name while the claimant keeps its key.
+		http.Error(w, "agent "+req.Name+" claimed its name through private enrollment; check who holds its key, then send confirm_self_enrolled:true, or reclaim it with POST /keys", http.StatusConflict)
+		return
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "forbidden: a memory lead can rejoin with its own key and assigned role, or be registered by an admin", http.StatusForbidden)
 		return
@@ -104,7 +143,8 @@ func registerAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	rows, err := pool.Query(r.Context(),
 		`SELECT name, session_id, role, description, capabilities, groups, status, last_seen, memory_lead,
-		    CASE WHEN $1 THEN EXISTS (SELECT 1 FROM api_keys WHERE agent = agents.name) END
+		    CASE WHEN $1 THEN EXISTS (SELECT 1 FROM api_keys WHERE agent = agents.name) END,
+		    CASE WHEN $1 THEN self_enrolled END
 		 FROM agents ORDER BY last_seen DESC`, principalFromContext(r.Context()).admin)
 	if err != nil {
 		log.Printf("query agents: %v", err)
@@ -116,7 +156,7 @@ func listAgents(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request) {
 	var agents []model.Agent
 	for rows.Next() {
 		var a model.Agent
-		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen, &a.MemoryLead, &a.KeyEnrolled); err != nil {
+		if err := rows.Scan(&a.Name, &a.SessionID, &a.Role, &a.Description, &a.Capabilities, &a.Groups, &a.Status, &a.LastSeen, &a.MemoryLead, &a.KeyEnrolled, &a.SelfEnrolled); err != nil {
 			log.Printf("scan agent: %v", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
@@ -148,6 +188,23 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 	}
 	defer func() { _ = tx.Rollback(r.Context()) }()
 
+	// Take the per-name lock that reclaim holds, then recheck the caller's
+	// key, so a delete queued behind a reclaim cannot remove the operator's
+	// new key.
+	if err := lockAgentName(r.Context(), tx, name); err != nil {
+		log.Printf("lock agent %s for deletion: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if revoked, err := keyRevoked(r.Context(), tx, principalFromContext(r.Context())); err != nil {
+		log.Printf("recheck key for deletion of %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	} else if revoked {
+		http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+		return
+	}
+
 	// Lock the row before reading the grant or deleting keys. A concurrent
 	// role change and deletion must agree which one happened first.
 	var lead bool
@@ -163,6 +220,12 @@ func deleteAgent(pool *pgxpool.Pool, w http.ResponseWriter, r *http.Request, nam
 	}
 	if lead && !principalFromContext(r.Context()).admin {
 		http.Error(w, "forbidden: only an admin can delete a memory lead", http.StatusForbidden)
+		return
+	}
+
+	if _, err := tx.Exec(r.Context(), `INSERT INTO reserved_agent_names (name) VALUES ($1) ON CONFLICT DO NOTHING`, name); err != nil {
+		log.Printf("reserve deleted agent name %s: %v", name, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 

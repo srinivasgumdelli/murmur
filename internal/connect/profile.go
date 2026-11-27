@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 func profilePath(dir, base, agent string) (string, error) {
@@ -95,10 +96,26 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 	}
 
 	admin := os.Getenv("MURMUR_ADMIN_KEY")
-	if !allowEnroll || admin == "" {
+	// A pending private claim is resumed even when an admin key is present:
+	// admin enrollment of that name would fail, because it is self-enrolled.
+	_, pendingErr := os.Stat(path + ".pending")
+	resumeClaim := pendingErr == nil
+	if allowEnroll && (admin == "" || resumeClaim) && o.enrollmentURL == "" && o.discoverEnrollment {
+		enrollmentURL, err := discoverPrivateEnrollment(ctx, c)
+		if err != nil {
+			return "", fmt.Errorf("check private enrollment availability: %w", err)
+		}
+		o.enrollmentURL = enrollmentURL
+	}
+	if !allowEnroll || (admin == "" && o.enrollmentURL == "") {
 		return "", fmt.Errorf("no saved credential for %q; enroll from a trusted launcher or supply its MURMUR_KEY", o.agent)
 	}
 	unlock, err := prepareProfile(path)
+	if errors.Is(err, syscall.EROFS) {
+		// connect mounts the profile read-only. An earlier enrollment that
+		// failed leaves an empty profile volume behind.
+		return "", fmt.Errorf("no saved credential for %q and its profile is read-only; finish enrollment with `scripts/docker-setup.sh enroll %s`, or supply its MURMUR_KEY", o.agent, o.agent)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -109,6 +126,14 @@ func loadCredential(ctx context.Context, c *client, o options, allowEnroll bool)
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return "", err
+	}
+	if o.enrollmentURL != "" {
+		key, err := enrollOnDocker(ctx, c, o, path)
+		// With an admin key, a refused private claim falls back to operator
+		// enrollment, which reports any self-enrolled conflict itself.
+		if !errors.Is(err, errClaimRejected) || admin == "" {
+			return key, err
+		}
 	}
 	key, err = c.enroll(ctx, o.agent, admin)
 	if err != nil {

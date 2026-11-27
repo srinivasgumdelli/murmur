@@ -2,8 +2,11 @@ package connect
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -229,5 +232,149 @@ func TestSandboxRequiresExplicitURL(t *testing.T) {
 	err := Run(t.Context(), []string{"connect", "--agent", "pilot", "--workspace", "demo", "--", "claude"})
 	if err == nil || !strings.Contains(err.Error(), "provide --url or MURMUR_URL") {
 		t.Fatalf("unexpected sandbox URL error: %v", err)
+	}
+}
+
+func TestPrivateEnrollmentRetriesSameClaim(t *testing.T) {
+	t.Setenv("MURMUR_KEY", "")
+	t.Setenv("MURMUR_ADMIN_KEY", "")
+	var hash atomic.Value
+	var attempts atomic.Int32
+	enrollment := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/enroll" || r.Method != http.MethodPost || r.Header.Get("X-Murmur-Key") != "" {
+			t.Errorf("unexpected enrollment request %s %s", r.Method, r.URL.Path)
+		}
+		var claim map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&claim); err != nil || claim["agent"] != "pilot" || len(claim["key_hash"]) != 64 {
+			t.Errorf("invalid claim: %v", err)
+		}
+		if attempts.Add(1) == 1 {
+			hash.Store(claim["key_hash"])
+			http.Error(w, "simulated lost response", http.StatusServiceUnavailable)
+			return
+		}
+		if hash.Load() != claim["key_hash"] {
+			t.Error("the retry changed the enrollment credential")
+		}
+		fmt.Fprint(w, `{"agent":"pilot"}`)
+	}))
+	defer enrollment.Close()
+	bus := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sum := sha256.Sum256([]byte(r.Header.Get("X-Murmur-Key")))
+		if fmt.Sprintf("%x", sum) != hash.Load() {
+			t.Error("the verified agent key differs from the enrollment claim")
+		}
+		fmt.Fprint(w, `{"agent":"pilot"}`)
+	}))
+	defer bus.Close()
+
+	c, err := newClient(bus.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := options{agent: "pilot", enrollmentURL: enrollment.URL, dir: filepath.Join(t.TempDir(), "profile")}
+	if _, err := loadCredential(t.Context(), c, o, true); err == nil {
+		t.Fatal("misreported the failed response as successful enrollment")
+	}
+	first, err := loadCredential(t.Context(), c, o, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := loadCredential(t.Context(), c, o, true)
+	if err != nil || saved != first || attempts.Load() != 2 {
+		t.Fatalf("expected reuse of the saved profile, attempts %d: %v", attempts.Load(), err)
+	}
+}
+
+func TestDiscoverPrivateEnrollmentUsesBusHostAndDegradedHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		status     int
+		want       string
+	}{
+		{"degraded memory still advertises", `{"status":"degraded","private_enrollment":true,"private_enrollment_port":4555}`, http.StatusServiceUnavailable, "4555"},
+		{"older server without port", `{"status":"ok","private_enrollment":true}`, http.StatusOK, "4445"},
+		{"listener not serving", `{"status":"ok"}`, http.StatusOK, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/health" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			c, err := newClient(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := discoverPrivateEnrollment(context.Background(), c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ""
+			if tc.want != "" {
+				want = "http://127.0.0.1:" + tc.want
+			}
+			if got != want {
+				t.Fatalf("discoverPrivateEnrollment = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRefusedPrivateClaimFallsBackToAdminEnrollment(t *testing.T) {
+	enroll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "agent name or credential already reserved", http.StatusConflict)
+	}))
+	defer enroll.Close()
+	enrollPort := enroll.Listener.Addr().(*net.TCPAddr).Port
+	var keyCalls atomic.Int32
+	bus := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/health":
+			fmt.Fprintf(w, `{"status":"ok","private_enrollment":true,"private_enrollment_port":%d}`, enrollPort)
+		case "/identity":
+			if r.Header.Get("X-Murmur-Key") == "admin-key" {
+				_, _ = io.WriteString(w, `{"admin":true}`)
+			} else {
+				_, _ = io.WriteString(w, `{"agent":"ops"}`)
+			}
+		case "/keys":
+			keyCalls.Add(1)
+			_, _ = io.WriteString(w, `{"agent":"ops","key":"issued-key"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer bus.Close()
+	c, err := newClient(bus.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "profile")
+	o := options{agent: "ops", dir: dir, discoverEnrollment: true}
+	t.Setenv("MURMUR_KEY", "")
+
+	t.Setenv("MURMUR_ADMIN_KEY", "")
+	if _, err := loadCredential(context.Background(), c, o, true); err == nil {
+		t.Fatal("refused claim without an admin key succeeded")
+	}
+	path, err := profilePath(dir, c.base, "ops")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".pending"); !os.IsNotExist(err) {
+		t.Fatalf("pending claim kept after 409: %v", err)
+	}
+
+	t.Setenv("MURMUR_ADMIN_KEY", "admin-key")
+	key, err := loadCredential(context.Background(), c, o, true)
+	if err != nil || key != "issued-key" || keyCalls.Load() != 1 {
+		t.Fatalf("admin fallback = (%q, %v) with %d /keys calls", key, err, keyCalls.Load())
 	}
 }

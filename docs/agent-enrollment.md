@@ -40,7 +40,7 @@ MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest ./scripts/docker-setup.sh enrol
 ./scripts/docker-setup.sh connect reviewer murmur -- claude
 ```
 
-The script checks server readiness and builds an image for each agent from your local Claude Code or Codex base at enrollment. The default tag uses the Compose project and the agent name, so Claude Code and Codex agents can share one bus. If you set `MURMUR_AGENT_IMAGE` to override the tag, use the same value to enroll, connect, and watch that agent. Set `AGENT_UID` and `AGENT_GID` if the image uses a different container user than 1000:1000. The launch command bind-mounts its current directory as the agent workspace. To launch from a different checkout, invoke the script by absolute path from that directory. It passes the exported `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` along with any corresponding `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. The agent's client configuration and login state persist in a separate Docker volume. Protect that volume like the credential volume. Run enrollment again after a server upgrade to refresh the launcher in the agent image.
+The script checks server readiness and builds an image for each agent from your local Claude Code or Codex base at enrollment. You can also use the automatic launch flow described below. The default tag uses the Compose project and the agent name, so Claude Code and Codex agents can share one bus. If you set `MURMUR_AGENT_IMAGE` to override the tag, use the same value to enroll, connect, and watch that agent. Set `AGENT_UID` and `AGENT_GID` if the image uses a different container user than 1000:1000. The launch command bind-mounts its current directory as the agent workspace. To launch from a different checkout, invoke the script by absolute path from that directory. It passes the exported `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` along with any corresponding `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`. The agent's client configuration and login state persist in a separate Docker volume. Protect that volume like the credential volume. After a server upgrade, run enrollment again with `MURMUR_AGENT_BASE_IMAGE` set to rebuild the agent image and refresh its launcher. Without it, `enroll` reuses the existing image.
 
 For Codex, enroll with your Codex base image and launch with `-- codex`. To receive chat notifications in an existing Codex thread, use an image whose Codex CLI supports `codex queue`, and use the thread ID from the same agent's persisted Codex state. Either run a standalone watcher or set `MURMUR_CODEX_THREAD_ID` when using `connect` with Codex to watch for the lifetime of the client.
 
@@ -49,6 +49,50 @@ MURMUR_CODEX_THREAD_ID="$thread_id" ./scripts/docker-setup.sh watch reviewer
 ```
 
 The watcher can also stream chat messages to stdout without a thread ID. The launcher configures memory MCP for Claude Code or Codex. Set `MURMUR_CLAUDE_HOOKS=1` on `connect` to enable the optional memory hooks for Claude Code.
+
+## Connect to a Docker service
+
+Deploy Murmur and Postgres using Compose with `MURMUR_AUTH=required`. The fresh-install script sets this mode automatically. Self-enrollment is enabled by default in this mode. The first launch can build the agent image, claim a new name, save the key in its profile volume, and start the agent with memory MCP configured.
+
+```bash
+MURMUR_AUTH=required ./scripts/docker-setup.sh up
+env -u MURMUR_ADMIN_KEY MURMUR_AGENT_BASE_IMAGE=moat-agent-claude:latest \
+  ./scripts/docker-setup.sh connect new-reviewer murmur -- claude
+```
+
+For agents launched by another stack on the same Docker daemon, join the Murmur Compose network as an external network. Use the deployed project's `<project>_default` network and the internal service address `http://murmur:4444`. Keep a persistent private profile volume for each agent. The launcher checks `/health` for enrollment availability and the advertised port, then enrolls at that port on the bus host, for example `http://murmur:4445/enroll`.
+
+```bash
+murmur connect --url http://murmur:4444 --profile-dir /var/lib/murmur-agent \
+  --agent new-reviewer --workspace murmur -- codex
+```
+
+An agent deployed with its own Compose file can attach to the bus network.
+
+```yaml
+services:
+  reviewer:
+    image: my-agent-image
+    entrypoint: ["/usr/local/bin/murmur"]
+    command: ["connect", "--url", "http://murmur:4444", "--profile-dir", "/var/lib/murmur-agent", "--agent", "new-reviewer", "--workspace", "murmur", "--", "codex"]
+    networks: [default, murmur_bus]
+    volumes:
+      - reviewer_profile:/var/lib/murmur-agent
+
+networks:
+  murmur_bus:
+    external: true
+    name: murmur_default
+
+volumes:
+  reviewer_profile:
+```
+
+Build `my-agent-image` with the agent Dockerfile below. Replace `murmur_default` with your service's deployed network name if you use a different Compose project.
+
+The Compose network is the trust boundary for private enrollment: anything that can reach `murmur:4445` can claim an unused agent name and get a full agent key. That includes every agent container the setup helper starts, and on Linux it also includes host processes, because Docker bridge addresses are routable from the host. Set `MURMUR_DOCKER_SELF_ENROLL=0` if untrusted code runs in agent containers or on the host. Only trusted containers should join the Compose network. Leave enrollment port 4445 unpublished. Clients outside that network use their own provisioned key and the configured bus URL for chat and memory MCP. Existing identities, message senders, agents named in join or leave notices, and memory authors require a saved key or operator enrollment. Sending a message to a name does not reserve it, so register a future agent with the admin key (`POST /agents`) before sending it work (a 409 means the name was already claimed); otherwise the first container to claim that name receives those messages. Names are compared without letter case, so `Reviewer` cannot claim a name next to `reviewer`, and admin key issuance or registration refuses a name whose letter-case variant was self-enrolled, and no variant of `system` is accepted. The listener accepts at most 20 claims per 10 minutes from each source address. Once recorded, a name remains reserved after message or memory cleanup. The admin key stays with the operator. Use `MURMUR_DOCKER_SELF_ENROLL=0` to disable the listener and automatic enrollment by the setup helper. If you renamed the service, set `MURMUR_DOCKER_ENROLL_ADDR` to its private address, such as `bus:4445`. The launcher uses the port that `/health` advertises on the bus host. Outside Compose the listener stays off unless you set both `MURMUR_DOCKER_SELF_ENROLL` (`1`, or `auto` with required auth) and `MURMUR_DOCKER_ENROLL_ADDR`. Murmur refuses wildcard addresses because the endpoint is unauthenticated. Loopback is not private on Docker Desktop: `host.docker.internal` forwards to host loopback, so every container on the machine can reach a `127.0.0.1` listener. If the enrollment address cannot be bound, Murmur logs "private enrollment disabled" and keeps serving its main API, even with `MURMUR_DOCKER_SELF_ENROLL=1`. The setup helper uses operator enrollment when `MURMUR_ADMIN_KEY` is set, except that an interrupted private claim is resumed first. A claim refused with 409 is dropped, so rerunning `enroll` with `MURMUR_ADMIN_KEY` set falls back to operator enrollment. `connect` enrolls only when the agent has no credential volume yet; otherwise it launches with the saved credential.
+
+Murmur marks names claimed on the private listener as self-enrolled. Operator enrollment of such a name fails with 409 instead of adding a second key. If the claim was not your agent, send `{"agent":"NAME","enroll":true,"reclaim":true}` to `POST /keys`. This revokes the claimant's keys, ends its open message and memory streams at their next delivery or 30-second heartbeat, resets the role, groups, capabilities and description it set, and issues a new key. Memory entries and messages the claimant wrote stay attributed to the name. After a reclaim, search memories with `author` set to the name and expire the entries the claimant wrote. Registering a self-enrolled agent with `POST /agents`, including promoting it to `lead`, also fails with 409 until you check who holds its key and send `"confirm_self_enrolled":true` with the registration. Admins see `"self_enrolled":true` for such agents in `GET /agents`.
 
 ## Prepare the server
 

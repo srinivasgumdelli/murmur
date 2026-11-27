@@ -50,6 +50,29 @@ func TestFTSLiteralQueries(t *testing.T) {
 	}
 }
 
+func TestAuthorsIncludeExpiredEntries(t *testing.T) {
+	ctx := t.Context()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "authors.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	at := time.Now().UTC()
+	expired := at.Add(-time.Hour)
+	_, _, err = store.Put(ctx, memory.Memory{
+		Scope: "workspace:sample", Body: "Prior identity", Author: "retired-lead",
+		Kind: memory.KindCommand, Source: memory.SourceManual, Provenance: memory.Reported,
+		CreatedAt: at.Add(-2 * time.Hour), ExpiresAt: &expired,
+	}, 10, memory.Actor{Agent: "retired-lead"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authors, err := store.Authors(ctx)
+	if err != nil || len(authors) != 1 || authors[0] != "retired-lead" {
+		t.Fatalf("authors = %v, err = %v", authors, err)
+	}
+}
+
 func TestOpenPreservesPreviousSchemaEntries(t *testing.T) {
 	ctx := t.Context()
 	path := filepath.Join(t.TempDir(), "memory.db")

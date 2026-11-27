@@ -11,6 +11,7 @@ Usage:
 
 Set MURMUR_AUTH and export MURMUR_ADMIN_KEY before running up.
 Set MURMUR_AGENT_BASE_IMAGE to a local Claude Code or Codex image before enrolling.
+Authenticated Compose deployments use private enrollment by default. Set MURMUR_DOCKER_SELF_ENROLL=0 to disable it.
 Set MURMUR_CODEX_THREAD_ID to send chat notifications to an existing Codex thread.
 See docs/agent-enrollment.md for configuration and auth cutover.
 USAGE
@@ -33,10 +34,42 @@ case ${1:-help} in
     *) usage >&2; exit 1 ;;
 esac
 
-# Compose resolves explicit project names, .env, and the checkout directory.
-project=$("${compose[@]}" config | awk '/^name: / { print $2 }')
+# Read the effective project and enrollment setting, including .env overrides.
+# A "|" separator keeps an empty project from shifting the mode into it.
+settings=$("${compose[@]}" config | awk '
+    /^name: / { project = $2 }
+    $1 == "MURMUR_DOCKER_SELF_ENROLL:" { mode = $2; sub(/^"/, "", mode); sub(/"$/, "", mode) }
+    END { print project "|" mode }
+')
+IFS='|' read -r project self_enroll <<< "$settings"
 [[ $project =~ ^[a-z0-9][a-z0-9_-]*$ ]] || fail "Could not determine the Compose project name."
+case $self_enroll in
+    # Compose files without the setting leave the server's listener off; the
+    # /health probe below decides whether private enrollment is usable.
+    "") self_enroll=auto ;;
+    0|1|auto) ;;
+    *) fail "Invalid MURMUR_DOCKER_SELF_ENROLL value '$self_enroll'. Use 0, 1, or auto." ;;
+esac
 compose+=(-p "$project")
+
+published_port() {
+    local published port
+    published=$("${compose[@]}" port murmur 4444) || return 1
+    port=${published##*:}
+    [[ $port =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$port"
+}
+
+private_enrollment_available() {
+    local port health
+    local capability='"private_enrollment"[[:space:]]*:[[:space:]]*true[[:space:]]*[,}]'
+    [[ $self_enroll != 0 ]] || return 1
+    port=$(published_port 2>/dev/null) || return 1
+    # No -f: /health returns 503 when memory is degraded, and enrollment
+    # does not depend on memory.
+    health=$(curl -qsS --noproxy '*' --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null) || return 1
+    [[ $health =~ $capability ]]
+}
 
 if [[ $action == up ]]; then
     [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh up"
@@ -47,9 +80,7 @@ if [[ $action == up ]]; then
     [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export a persistent MURMUR_ADMIN_KEY from your secret store."
     export MURMUR_ADMIN_KEY
     "${compose[@]}" up -d --build
-    published=$("${compose[@]}" port murmur 4444)
-    port=${published##*:}
-    [[ $port =~ ^[0-9]+$ ]] || fail "Could not determine Murmur's published port."
+    port=$(published_port) || fail "Could not determine Murmur's published port."
     health_url=http://127.0.0.1:$port/health
     for ((attempt = 0; attempt < 30; attempt++)); do
         if health=$(curl -qfsS --noproxy '*' --max-time 2 "$health_url" 2>/dev/null); then
@@ -69,20 +100,56 @@ profile_volume="$project.$agent-profile"
 state_volume="$project.$agent-client"
 run=(docker run --rm --network "${project}_default" --entrypoint /usr/local/bin/murmur)
 
-if [[ $action == enroll ]]; then
-    [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh enroll AGENT"
+build_agent_image() {
     [[ -n ${MURMUR_AGENT_BASE_IMAGE:-} ]] || fail "Set MURMUR_AGENT_BASE_IMAGE to a local image that contains your agent client."
-    [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export MURMUR_ADMIN_KEY to enroll an agent."
-    export MURMUR_ADMIN_KEY
     docker build -f "$root/Dockerfile.agent" --tag "$agent_image" \
         --build-arg "MURMUR_IMAGE=$project-murmur:latest" \
         --build-arg "AGENT_IMAGE=$MURMUR_AGENT_BASE_IMAGE" \
         --build-arg "AGENT_UID=${AGENT_UID:-1000}" \
         --build-arg "AGENT_GID=${AGENT_GID:-1000}" "$root"
+}
+
+launcher_supports_private_enrollment() {
+    # Capture instead of piping to grep -q, which can fail under pipefail.
+    local help
+    help=$(docker run --rm --entrypoint /usr/local/bin/murmur "$agent_image" enroll -h 2>&1) || true
+    [[ $help == *-enrollment-url* ]]
+}
+
+enroll_agent() {
+    local enrollment=( "${run[@]}" )
+    local credential=(enroll --url "$bus_url" --agent "$agent" --profile-dir "$profile_dir")
+    if [[ $1 == private ]] && ! launcher_supports_private_enrollment; then
+        # Images built before private enrollment carry a launcher without it.
+        [[ -n ${MURMUR_AGENT_BASE_IMAGE:-} ]] ||
+            fail "$agent_image has a launcher without private enrollment. Set MURMUR_AGENT_BASE_IMAGE to rebuild it, or export MURMUR_ADMIN_KEY."
+        build_agent_image >&2
+    fi
+    if [[ $1 != private ]]; then
+        [[ -n ${MURMUR_ADMIN_KEY:-} ]] || fail "Export MURMUR_ADMIN_KEY to enroll an agent."
+        export MURMUR_ADMIN_KEY
+        enrollment+=(-e MURMUR_ADMIN_KEY)
+    fi
     docker volume create "$profile_volume" >/dev/null
-    exec "${run[@]}" -e MURMUR_ADMIN_KEY \
-        --mount "type=volume,src=$profile_volume,dst=$profile_dir" "$agent_image" \
-        enroll --url "$bus_url" --agent "$agent" --profile-dir "$profile_dir"
+    "${enrollment[@]}" --mount "type=volume,src=$profile_volume,dst=$profile_dir" \
+        "$agent_image" "${credential[@]}"
+}
+
+if [[ $action == enroll ]]; then
+    [[ $# == 0 ]] || fail "Usage: scripts/docker-setup.sh enroll AGENT"
+    # Rebuild when a base image is given; otherwise reuse the agent's image,
+    # so rerunning enroll after an interrupted claim needs no extra settings.
+    if [[ -n ${MURMUR_AGENT_BASE_IMAGE:-} ]] || ! docker image inspect "$agent_image" >/dev/null 2>&1; then
+        build_agent_image
+    fi
+    if [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
+        enroll_agent admin
+    elif private_enrollment_available; then
+        enroll_agent private
+    else
+        fail "Private enrollment is unavailable. Export MURMUR_ADMIN_KEY for operator enrollment."
+    fi
+    exit
 fi
 
 args=("$action" --url "$bus_url" --agent "$agent" --profile-dir "$profile_dir")
@@ -111,6 +178,22 @@ if [[ $action == connect ]]; then
         args+=(--task "$MURMUR_TASK")
     fi
     args+=(-- "$@")
+    # An existing profile volume holds the saved credential, so skip
+    # enrollment and launch directly, as before private enrollment existed.
+    enrollment_method=
+    if docker volume inspect "$profile_volume" >/dev/null 2>&1; then
+        :
+    elif [[ -n ${MURMUR_ADMIN_KEY:-} ]]; then
+        enrollment_method="admin"
+    elif private_enrollment_available; then
+        enrollment_method="private"
+    fi
+    if [[ -n $enrollment_method ]]; then
+        if ! docker image inspect "$agent_image" >/dev/null 2>&1; then
+            build_agent_image >&2
+        fi
+        enroll_agent "$enrollment_method" >&2
+    fi
     run+=(-i --mount "type=bind,src=$workdir,dst=/workspace" --workdir /workspace)
     if [[ -t 0 && -t 1 ]]; then
         run+=(-t)
@@ -122,8 +205,13 @@ fi
 
 docker volume inspect "$profile_volume" >/dev/null 2>&1 ||
     fail "No credential volume for $agent in project $project. Run enroll first."
+# A volume left by a failed enrollment holds no key yet. connect mounts it
+# read-only and fails. After an interrupted claim, run enroll AGENT again to
+# resume it. If the name was taken (409), the launcher drops the pending
+# claim: pick another name, or enroll it again with MURMUR_ADMIN_KEY set.
 exec "${run[@]}" \
     --mount "type=volume,src=$profile_volume,dst=$profile_dir,readonly" \
     --mount "type=volume,src=$state_volume,dst=$state_dir" \
+    -e "MURMUR_DOCKER_SELF_ENROLL=$self_enroll" \
     -e "CODEX_HOME=$state_dir/codex" -e "CLAUDE_CONFIG_DIR=$state_dir/claude" \
     "$agent_image" "${args[@]}"

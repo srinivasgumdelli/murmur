@@ -80,6 +80,20 @@ func Poll(pool DB, notifier *Notifier) http.HandlerFunc {
 
 		notifier.Wait(ctx, agent)
 
+		// The key may have been revoked while this request waited. Check
+		// before refreshing presence, so a revoked holder cannot mark the
+		// agent online.
+		revoked, err := keyRevoked(r.Context(), pool, principalFromContext(r.Context()))
+		if err != nil {
+			log.Printf("poll: recheck key: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if revoked {
+			http.Error(w, "unauthorized: valid Murmur key required", http.StatusUnauthorized)
+			return
+		}
+
 		// Refresh heartbeat after wait
 		_, _ = pool.Exec(r.Context(),
 			`UPDATE agents SET status = 'online', last_seen = now() WHERE name = $1`, agent)

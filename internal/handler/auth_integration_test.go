@@ -98,6 +98,201 @@ func TestLegacyKeyRegistrationAndBearerKeyCreation(t *testing.T) {
 		return out.Key
 	}
 
+	t.Run("private enrollment", func(t *testing.T) {
+		// A generous limiter keeps this test's many claims under the limit.
+		private := privateEnrollment(pool, &claimLimiter{limit: 1000, window: time.Minute, now: time.Now})
+		pair := func(name, key string) string {
+			return fmt.Sprintf(`{"agent":%q,"key_hash":%q}`, name, hashKey(key))
+		}
+		claim := func(name, key string, want int) {
+			t.Helper()
+			req := httptest.NewRequest(http.MethodPost, "/enroll", strings.NewReader(pair(name, key))).WithContext(ctx)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			private.ServeHTTP(rec, req)
+			if rec.Code != want {
+				t.Fatalf("claim %q returned %d, want %d: %s", name, rec.Code, want, rec.Body)
+			}
+			if rec.Code == http.StatusOK && rec.Body.String() != fmt.Sprintf("{\"agent\":%q}\n", name) {
+				t.Fatalf("unexpected claim response: %s", rec.Body)
+			}
+		}
+		const key = "new-agent-private-key"
+		claim("system", key, http.StatusBadRequest)
+		claim("System", key, http.StatusBadRequest)
+		do(private, http.MethodGet, "/identity", key, "", http.StatusNotFound)
+		do(required, http.MethodPost, "/enroll", admin, pair("private-agent", key), http.StatusNotFound)
+		claim("private-agent", key, http.StatusOK)
+		claim("private-agent", key, http.StatusOK)
+		claim("private-agent", "different-key", http.StatusConflict)
+		claim("different-agent", key, http.StatusConflict)
+		do(required, http.MethodGet, "/identity", key, "", http.StatusOK)
+		issueKey(required, "reserved-legacy-key")
+		claim("reserved-legacy-key", "another-key", http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"unkeyed-agent","role":"worker"}`, http.StatusCreated)
+		claim("unkeyed-agent", "another-key", http.StatusConflict)
+		// A message to an unclaimed name must not block its first enrollment.
+		if _, err := pool.Exec(ctx, `INSERT INTO messages (sender, "to", message) VALUES ('host-sender', 'future-recipient', 'start reviewing')`); err != nil {
+			t.Fatal(err)
+		}
+		claim("future-recipient", "future-recipient-key", http.StatusOK)
+		claim("host-sender", "another-key", http.StatusConflict)
+		// Simulate an older database containing history from before the trigger.
+		if _, err := pool.Exec(ctx, `
+			ALTER TABLE messages DISABLE TRIGGER message_inserted;
+			INSERT INTO messages (sender, "to", message) VALUES
+				('former-sender', 'former-recipient', 'history'),
+				('system', NULL, 'former-joined joined — worked on docs'),
+				('system', NULL, 'former-left left');
+			DELETE FROM murmur_schema_migrations WHERE name = 'reserve-message-identities-v2'
+		`); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Apply(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE sender IN ('former-sender', 'system')`); err != nil {
+			t.Fatal(err)
+		}
+		claim("former-sender", "another-key", http.StatusConflict)
+		claim("former-joined", "another-key", http.StatusConflict)
+		claim("former-left", "another-key", http.StatusConflict)
+		claim("former-recipient", "former-recipient-key", http.StatusOK)
+		// Keep the roster checks below limited to their own agents.
+		do(required, http.MethodDelete, "/agents/future-recipient", admin, "", http.StatusOK)
+		do(required, http.MethodDelete, "/agents/former-recipient", admin, "", http.StatusOK)
+		claim("former-recipient", "former-recipient-key", http.StatusConflict)
+		if err := schema.ReserveAgentNames(ctx, pool, []string{"former-memory-author"}); err != nil {
+			t.Fatal(err)
+		}
+		claim("former-memory-author", "another-key", http.StatusConflict)
+		// Names differing only in letter case are the same identity.
+		claim("Private-Agent", "case-key", http.StatusConflict)
+		claim("FUTURE-RECIPIENT", "case-key", http.StatusConflict)
+
+		// Concurrent claims of case variants leave exactly one identity.
+		results := make(chan int, 2)
+		for _, name := range []string{"racer", "Racer"} {
+			go func(name string) {
+				req := httptest.NewRequest(http.MethodPost, "/enroll", strings.NewReader(pair(name, name+"-key"))).WithContext(ctx)
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				private.ServeHTTP(rec, req)
+				results <- rec.Code
+			}(name)
+		}
+		if codes := []int{<-results, <-results}; !slices.Contains(codes, http.StatusOK) || !slices.Contains(codes, http.StatusConflict) {
+			t.Fatalf("concurrent case-variant claims returned %v, want one 200 and one 409", codes)
+		}
+		for _, name := range []string{"racer", "Racer"} {
+			_, _ = pool.Exec(ctx, `DELETE FROM api_keys WHERE agent = $1`, name)
+			_, _ = pool.Exec(ctx, `DELETE FROM agents WHERE name = $1`, name)
+		}
+
+		// A claimant request queued behind a reclaim is refused once it runs.
+		for _, tc := range []struct{ method, path, body string }{
+			{http.MethodPost, "/agents", `{"name":"raced","role":"lead","description":"planted"}`},
+			{http.MethodDelete, "/agents/raced", ""},
+		} {
+			claim("raced", "raced-key", http.StatusOK)
+			held, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := lockAgentName(ctx, held, "raced"); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan int, 1)
+			go func() {
+				req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)).WithContext(ctx)
+				req.Header.Set("Authorization", "Bearer raced-key")
+				rec := httptest.NewRecorder()
+				required.ServeHTTP(rec, req)
+				done <- rec.Code
+			}()
+			// Wait until the request is blocked on the advisory lock.
+			for waiting := false; !waiting; {
+				if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted)`).Scan(&waiting); err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, err := held.Exec(ctx, `DELETE FROM api_keys WHERE agent = 'raced'`); err != nil {
+				t.Fatal(err)
+			}
+			if err := held.Commit(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if code := <-done; code != http.StatusUnauthorized {
+				t.Fatalf("%s %s after revocation returned %d, want 401", tc.method, tc.path, code)
+			}
+			var role string
+			if err := pool.QueryRow(ctx, `SELECT role FROM agents WHERE name = 'raced'`).Scan(&role); err != nil || role != "coding-agent" {
+				t.Fatalf("queued request changed the reclaimed agent: role %q (%v)", role, err)
+			}
+			if _, err := pool.Exec(ctx, `DELETE FROM agents WHERE name = 'raced'; DELETE FROM reserved_agent_names WHERE name = 'raced'`); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		// Admin flows cannot create a look-alike next to a self-enrolled name.
+		claim("Lookalike", "lookalike-key", http.StatusOK)
+		request(required, "/keys", admin, `{"agent":"lookalike","enroll":true}`, http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"LOOKALIKE","role":"lead"}`, http.StatusConflict)
+		do(required, http.MethodDelete, "/agents/Lookalike", admin, "", http.StatusOK)
+
+		// Admin key issuance and lead promotion never silently adopt a claim.
+		const squatter = "squatter-key"
+		claim("contested", squatter, http.StatusOK)
+		squatterPrincipal := principal{agent: "contested", keyHash: hashKey(squatter)}
+		if revoked, err := keyRevoked(ctx, pool, squatterPrincipal); err != nil || revoked {
+			t.Fatalf("fresh claim key reported revoked (%v)", err)
+		}
+		request(required, "/keys", admin, `{"agent":"contested","enroll":true}`, http.StatusConflict)
+		request(required, "/keys", admin, `{"agent":"contested"}`, http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusConflict)
+		request(required, "/agents", admin, `{"name":"contested","role":"worker"}`, http.StatusConflict)
+		roster := do(required, http.MethodGet, "/agents", admin, "", http.StatusOK)
+		if !strings.Contains(roster.Body.String(), `"name":"contested"`) || !strings.Contains(roster.Body.String(), `"self_enrolled":true`) {
+			t.Fatalf("admin roster does not flag the self-enrolled agent: %s", roster.Body)
+		}
+		do(required, http.MethodGet, "/identity", squatter, "", http.StatusOK)
+		reclaimed := request(required, "/keys", admin, `{"agent":"contested","enroll":true,"reclaim":true}`, http.StatusCreated)
+		var out struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(reclaimed.Body.Bytes(), &out); err != nil || out.Key == "" {
+			t.Fatalf("reclaim response: %s (%v)", reclaimed.Body, err)
+		}
+		do(required, http.MethodGet, "/identity", squatter, "", http.StatusUnauthorized)
+		// Open streams recheck the key, so the claimant's stream ends too.
+		if revoked, err := keyRevoked(ctx, pool, squatterPrincipal); err != nil || !revoked {
+			t.Fatalf("reclaimed key not revoked for open streams (%v)", err)
+		}
+		var role string
+		if err := pool.QueryRow(ctx, `SELECT role FROM agents WHERE name = 'contested'`).Scan(&role); err != nil || role != "coding-agent" {
+			t.Fatalf("reclaim kept the claimant's role %q (%v)", role, err)
+		}
+		do(required, http.MethodGet, "/identity", out.Key, "", http.StatusOK)
+		// After a reclaim the name is operator-owned, so promotion needs no confirmation.
+		request(required, "/agents", admin, `{"name":"contested","role":"lead"}`, http.StatusCreated)
+
+		const vouched = "vouched-key"
+		claim("vouched", vouched, http.StatusOK)
+		request(required, "/agents", admin, `{"name":"vouched","role":"lead","confirm_self_enrolled":true}`, http.StatusCreated)
+		identity := do(required, http.MethodGet, "/identity", vouched, "", http.StatusOK)
+		if !strings.Contains(identity.Body.String(), `"lead":true`) {
+			t.Fatalf("confirmed self-enrolled agent is not lead: %s", identity.Body)
+		}
+		request(required, "/keys", admin, `{"agent":"vouched","enroll":true}`, http.StatusCreated)
+		for _, name := range []string{"contested", "vouched"} {
+			do(required, http.MethodDelete, "/agents/"+name, admin, "", http.StatusOK)
+		}
+
+		do(required, http.MethodDelete, "/agents/private-agent", key, "", http.StatusOK)
+		claim("private-agent", key, http.StatusConflict)
+	})
+
 	enroll := func(name string) string {
 		t.Helper()
 		rec := request(off, "/keys", admin, fmt.Sprintf(`{"agent":%q,"enroll":true}`, name), http.StatusCreated)
